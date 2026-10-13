@@ -1,0 +1,37 @@
+COMMAND ['--selftest', 'D:\\Code\\epub_read\\fixtures\\sample-epub3.epub']
+EXIT 0
+书名：便携阅读器开发样书
+作者：开发自检
+章节数：2
+目录：
+- 第一章：开始阅读 [章 1 #]
+  - 小节：图片与标记 [章 1 #section]
+- 第二章：长章节 [章 2 #]
+章 1 第一章：开始阅读：段落数 7，图片数 1
+章 2 第二章：长章节：段落数 1001，图片数 0
+解析耗时：20 ms
+
+COMMAND ['--selftest', 'D:\\Code\\epub_read\\fixtures\\sample-epub2.epub']
+EXIT 0
+书名：便携阅读器开发样书
+作者：开发自检
+章节数：2
+目录：
+- 第一章：开始阅读 [章 1 #]
+  - 小节：图片与标记 [章 1 #section]
+- 第二章：长章节 [章 2 #]
+章 1 第一章：开始阅读：段落数 7，图片数 1
+章 2 第二章：长章节：段落数 1001，图片数 0
+解析耗时：20 ms
+
+COMMAND ['--selftest-store']
+EXIT 0
+存储自检通过：写入标记 → 重新读取 → 校验 → 清理
+
+COMMAND ['--selftest', 'D:\\Code\\epub_read\\fixtures\\missing.epub']
+EXIT 1
+自检失败：无法打开 D:\Code\epub_read\fixtures\missing.epub：系统找不到指定的文件。 (os error 2)
+
+COMMAND ['--selftest']
+EXIT 1
+自检失败：用法：epub-reader.exe --selftest <epub路径>

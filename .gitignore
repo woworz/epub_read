@@ -1,0 +1,8 @@
+/target/
+/.tools/
+/data/
+**/data/
+/dist/data/
+*.tmp
+*.exe
+*.zip

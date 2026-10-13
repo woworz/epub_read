@@ -1,0 +1,37 @@
+[
+  {
+    "args": [
+      "--selftest",
+      "D:\\Code\\epub_read\\fixtures\\sample-epub2.epub"
+    ],
+    "exit_code": 0,
+    "stdout": "书名：便携阅读器开发样书\n作者：开发自检\n章节数：2\n目录：\n- 第一章：开始阅读 [章 1 #]\n  - 小节：图片与标记 [章 1 #section]\n- 第二章：长章节 [章 2 #]\n章 1 第一章：开始阅读：段落数 7，图片数 1\n章 2 第二章：长章节：段落数 1001，图片数 0\n解析耗时：18 ms\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "--selftest",
+      "D:\\Code\\epub_read\\fixtures\\sample-epub3.epub"
+    ],
+    "exit_code": 0,
+    "stdout": "书名：便携阅读器开发样书\n作者：开发自检\n章节数：2\n目录：\n- 第一章：开始阅读 [章 1 #]\n  - 小节：图片与标记 [章 1 #section]\n- 第二章：长章节 [章 2 #]\n章 1 第一章：开始阅读：段落数 7，图片数 1\n章 2 第二章：长章节：段落数 1001，图片数 0\n解析耗时：16 ms\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "--selftest",
+      "D:\\Code\\epub_read\\fixtures\\scroll-regression.epub"
+    ],
+    "exit_code": 0,
+    "stdout": "书名：便携阅读器开发样书\n作者：开发自检\n章节数：2\n目录：\n- 第一章：开始阅读 [章 1 #]\n  - 小节：图片与标记 [章 1 #section]\n- 第二章：长章节 [章 2 #]\n章 1 第一章：开始阅读：段落数 301，图片数 0\n章 2 第二章：长章节：段落数 1001，图片数 0\n解析耗时：22 ms\n",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "--selftest-store"
+    ],
+    "exit_code": 0,
+    "stdout": "存储自检通过：写入标记 → 重新读取 → 校验 → 清理\n",
+    "stderr": ""
+  }
+]

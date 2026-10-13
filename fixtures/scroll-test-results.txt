@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.50s
+     Running unittests src\main.rs (target\x86_64-pc-windows-msvc\debug\deps\epub_reader-b0468d6de6b70023.exe)
+
+running 3 tests
+test ui::tests::wheel_on_short_chapter_continues_to_next_chapter ... ok
+test ui::tests::wheel_scrolls_long_chapter_and_idle_keeps_position ... ok
+test ui::tests::ctrl_wheel_changes_font_without_scrolling ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s
+

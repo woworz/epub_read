@@ -1,0 +1,34 @@
+Microsoft (R) COFF/PE Dumper Version 14.44.35229.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file fixtures\portable\epub-reader.exe
+
+File Type: EXECUTABLE IMAGE
+
+  Image has the following dependencies:
+
+    KERNEL32.dll
+    api-ms-win-core-synch-l1-2-0.dll
+    bcryptprimitives.dll
+    OPENGL32.dll
+    SHLWAPI.dll
+    USER32.dll
+    SHELL32.dll
+    GDI32.dll
+    ADVAPI32.dll
+    imm32.dll
+    ntdll.dll
+    ole32.dll
+    uxtheme.dll
+    dwmapi.dll
+
+  Summary
+
+        3000 .data
+        1000 .fptable
+        D000 .pdata
+       7F000 .rdata
+        3000 .reloc
+        2000 .rsrc
+      1B8000 .text

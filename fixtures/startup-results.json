@@ -1,0 +1,22 @@
+[
+  {
+    "args": [],
+    "first_window_ms": 202.7,
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "args": [
+      "D:\\Code\\epub_read\\fixtures\\sample-epub3.epub"
+    ],
+    "first_window_ms": 96.8,
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "settings_saved": true,
+    "book_data_files": 1
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "baseline_bytes": 2392064,
+  "release_bytes": 2392064,
+  "delta_bytes": 0,
+  "dll_dependencies_unchanged": true,
+  "dll_count": 14,
+  "dlls": [
+    "ADVAPI32.dll",
+    "GDI32.dll",
+    "KERNEL32.dll",
+    "OPENGL32.dll",
+    "SHELL32.dll",
+    "SHLWAPI.dll",
+    "USER32.dll",
+    "api-ms-win-core-synch-l1-2-0.dll",
+    "bcryptprimitives.dll",
+    "dwmapi.dll",
+    "imm32.dll",
+    "ntdll.dll",
+    "ole32.dll",
+    "uxtheme.dll"
+  ],
+  "cargo_test_passed": 10,
+  "cargo_test_failed": 0,
+  "gui_fixed_version_verified": false,
+  "gui_stop_reason": "Computer Use stopped by physical Escape key"
+}
