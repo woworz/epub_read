@@ -20,7 +20,24 @@ pub struct Settings {
     pub collapsed_toc: Vec<String>,
     pub window_size: [f32; 2],
     pub window_pos: Option<[f32; 2]>,
+    #[serde(default = "default_window_opacity")]
+    pub window_opacity: u8,
     pub last_book: String,
+}
+fn default_window_opacity() -> u8 {
+    100
+}
+
+// 100% 时恢复最近的低透明度；首次使用 F9 默认切换到 80%。
+pub fn toggle_opacity(current: u8, last_low: &mut u8) -> u8 {
+    let current = current.clamp(20, 100);
+    if current < 100 {
+        *last_low = current;
+        100
+    } else {
+        *last_low = (*last_low).clamp(20, 95);
+        *last_low
+    }
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -43,6 +60,7 @@ impl Default for Settings {
             collapsed_toc: Vec::new(),
             window_size: [1100., 800.],
             window_pos: None,
+            window_opacity: default_window_opacity(),
             last_book: String::new(),
         }
     }
@@ -72,7 +90,57 @@ impl Settings {
         bounded(&mut self.window_size[0], 500., 8000., 1100.);
         bounded(&mut self.window_size[1], 350., 8000., 800.);
         self.weight = self.weight.min(2);
+        self.window_opacity = self.window_opacity.clamp(20, 100);
         bounded(&mut self.toc_width, 150., 600., 235.);
         bounded(&mut self.marks_width, 180., 600., 260.);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opacity_is_bounded() {
+        for (input, expected) in [(0, 20), (10, 20), (20, 20), (100, 100), (150, 100)] {
+            let mut settings = Settings {
+                window_opacity: input,
+                ..Default::default()
+            };
+            settings.sanitize();
+            assert_eq!(settings.window_opacity, expected);
+        }
+    }
+
+    #[test]
+    fn old_json_defaults_to_opaque() {
+        let settings: Settings = serde_json::from_str(r#"{"size":24,"immersive":true}"#).unwrap();
+        assert_eq!(settings.window_opacity, 100);
+        assert_eq!(settings.size, 24.);
+        assert!(settings.immersive);
+        let settings: Settings = serde_json::from_str(r#"{"window_opacity":35}"#).unwrap();
+        assert_eq!(settings.window_opacity, 35);
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settings>(&saved)
+                .unwrap()
+                .window_opacity,
+            35
+        );
+    }
+
+    #[test]
+    fn f9_remembers_low_opacity() {
+        let mut last = 80;
+        assert_eq!(toggle_opacity(100, &mut last), 80);
+        assert_eq!(toggle_opacity(35, &mut last), 100);
+        assert_eq!(last, 35);
+        assert_eq!(toggle_opacity(100, &mut last), 35);
+        assert_eq!(toggle_opacity(20, &mut last), 100);
+        assert_eq!(toggle_opacity(100, &mut last), 20);
+        last = 0;
+        assert_eq!(toggle_opacity(100, &mut last), 20);
+        last = 150;
+        assert_eq!(toggle_opacity(100, &mut last), 95);
     }
 }

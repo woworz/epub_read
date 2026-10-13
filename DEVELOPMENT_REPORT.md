@@ -5,7 +5,7 @@
 ## 交付与构建
 
 - 完整 Cargo 工程：`Cargo.toml`、`Cargo.lock`、`.cargo/config.toml`、`build.rs`、`src`、`assets`。
-- 可运行程序：`epub-reader.exe`，release 实际大小 **2,392,064 bytes（2.281 MiB）**。
+- 可运行程序：`epub-reader.exe`，本次增量后 release 实际大小 **2,407,936 bytes（2.296 MiB）**；原基线为 2,392,064 bytes。
 - `README.md`、`build.bat`、本报告；EPUB2 / EPUB3 开发样书和自检脚本。
 - `epub-reader-source.zip`：完整源码，不含 Rust/MSVC 工具链和 target 缓存。
 - `epub-reader-portable.zip`：exe 与说明文档。运行时只需 exe，data 首次运行自动创建。
@@ -31,6 +31,7 @@
 | 导出 | Markdown 或 TXT，包括书名、作者、章节、原文、备注；覆盖已有文件需在程序内确认 |
 | 稳定标识 | EPUB 原始内容 SHA-256 分书；章节 ID + 段落序号 + 原文 SHA-256 分段；跳转时可用文本哈希再次寻找 |
 | 窗口 | 窗口位置/大小、面板显示/宽度、目录折叠状态持久化；F11 全屏、F10 沉浸 |
+| 窗口透明度 | Win32 分层窗口，20%–100%、5% 步长；设置滑块/100% 恢复、Ctrl+Shift+↑/↓、F9；当前透明度持久化，兼容旧设置，失败禁用入口；默认排版恢复保留透明度 |
 | 显示与资源 | PerMonitorV2 DPI 清单；自行绘制小 ICO，由 build.rs / rc.exe 嵌入 |
 | 性能结构 | 章节按需解析、最多四章内容缓存；当前章排版缓存；可见段落虚拟化绘制；图片按需解码，章节切换释放纹理 |
 | 无窗口模式 | --selftest 输出书籍、树状目录、各章段落块/图片数、耗时；--selftest-store 存储往返校验并清理 |
@@ -53,7 +54,7 @@ ZIP 使用 zip 0.6.6，禁用默认 feature，仅启用 deflate；XML 使用 rox
 | storage.rs | 同目录 JSON 读取与原子写入、存储自检 |
 | ui.rs | 阅读、虚拟绘制、交互、设置、目录、标记与导出 |
 | picker.rs | 无 Shell 历史记录的程序内文件选择器 |
-| native.rs | 少量 Windows 系统调用：原子替换、本地盘列表、CLI 控制台输出 |
+| native.rs | 少量 Windows 系统调用：原子替换、本地盘列表、CLI 控制台输出、窗口分层透明度 |
 
 关键处已加入简短中文注释，源码已 rustfmt 格式化。自检和图片均限制单条 ZIP 解压资源最大 64MiB；图片另设尺寸/内存分配限制，不解压 ZIP 到文件系统。
 
@@ -69,13 +70,35 @@ ZIP 使用 zip 0.6.6，禁用默认 feature，仅启用 deflate；XML 使用 rox
 
 这些检查属于开发验收，不替代后续全面测试；尚未在无开发工具的全新 Windows VM 上运行，也未执行 ProcMon 全链路系统访问审计。
 
+## 本次增量验证：实体/编码与窗口透明度
+
+本次保持现有项目结构、便携存储和静态 CRT。`xml()` 统一处理 UTF-8 BOM、带 BOM 的 UTF-16LE/BE、损坏 UTF-8；新增 `normalize_entities()`、DTD 声明收集与字面区间扫描，`parse()` 的 `allow_dtd: true` 保持不变。
+
+实体表是按名称排序的 `&[(&str, u32)]`，252 项，二分查找，无新增实体/编码 crate。x64 元组每项 24 bytes，共 6,048 bytes，名称字符共 1,164 bytes；未计对齐/链接器共享时静态数据约 7,212 bytes。任务一阶段 release 为 2,407,936 bytes，相比基线增加 15,872 bytes（15.5 KiB）；最终含任务二的 release 仍为 2,407,936 bytes。实际文件大小受 LTO、字符串共享和 PE 对齐影响，不能将代码或数据的理论大小直接相加。
+
+`cargo tree -i raw-window-handle --locked --offline` 确认框架已使用 0.6.2；新增精确版本直接依赖 `raw-window-handle = "=0.6.2"`，Cargo.lock 仅给本包增加这一依赖，未增加新版本或新 Windows crate。窗口调用继续使用手写 FFI。设置字段用 `#[serde(default = "default_window_opacity")]` 显式指定 100，避免字段级默认变成整数 0；原结构的 `#[serde(default)]` 继续保留。F9 的低透明度记忆位于 Reader，仅本次运行保存；当前百分比持久化，首次不透明启动的 F9 预设为 80%。
+
+已验证（Windows 11 专业版 x64，10.0.26200）：
+
+- `cargo test --locked --offline`：22 项通过，包括原有 10 项阅读/滚动测试、6 项实体/编码/样书测试、3 项设置测试、2 项 native 测试、1 项透明度快捷键测试。
+- `cargo build --release --locked`：通过，构建环境设置 `CARGO_NET_OFFLINE=true`，复用本地工具链/依赖缓存；`cargo fmt -- --check` 与 `git diff --check` 通过。
+- `tools/check_selftest.py`：三本书、自检存储、缺文件/缺参数退出码通过。实体样书校验四章正文；原两本样书与修改前自检输出除耗时外一致。日志见 `fixtures/selftest-results.txt`。
+- 原始样书 ZIP 内容已保留；新增 `fixtures/entities.epub` 覆盖实体、内部 DTD、CDATA/注释、非法数字引用和不同编码。单元测试额外覆盖 NCX 解码/目录。
+- 真实隐藏 Win32 STATIC 窗口：20/55/95% 的 alpha 与样式正确，其他扩展样式位保留，100% 移除 LAYERED，无效句柄返回错误。该测试不创建 OpenGL 上下文。
+- egui 输入测试：Ctrl+Shift+↑/↓ 改透明度且不滚动/翻章，Ctrl+Shift+←/→ 不误翻章；F9 来回恢复且忽略重复按键；无焦点、Alt 修饰或禁用入口不触发透明度。
+- `dumpbin /dependents`：只列出 Windows 系统 DLL，没有 VCRUNTIME/MSVCP 动态 CRT 依赖。
+
+未验证：实际 glow 窗口的透明显示、鼠标拖动实时效果、F11/F10/Esc 后的显示、重启实际恢复、不同 GPU/远程桌面、Win10 与干净 Win11 环境。本次没有进行视觉验收或全链路文件/注册表/网络审计；源码未增加这些访问。
+
+风险判断：OpenGL 与分层窗口在某些驱动或远程会话、窗口切换场景可能黑屏/闪烁。遇到问题恢复 100%（移除 LAYERED）；后续可禁用该环境的透明度，或经另行评估改用其他渲染后端/透明帧缓冲，本次没有替换指定实现。微软还明确规定 WS_EX_LAYERED 不兼容 CS_OWNDC/CS_CLASSDC；当前 winit 0.30.13 使用的窗口类样式为 CS_HREDRAW | CS_VREDRAW。参考 [扩展窗口样式](https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles) 和 [SetLayeredWindowAttributes](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setlayeredwindowattributes)。
+
 ## 默认取舍与已知限制
 
 1. 阅读位置采用“章节 + 段落 + 段内高度比例”。同排版恢复到相同偏移，重排后保持同段的相对位置；尚未实现按字符/字形偏移精确映射。段落标记独立于排版，不受字号和窗口大小影响。
 2. 全书百分比按章节等权加章内段落位置估算，不按文字总量加权，不对应印刷页码。最后一屏允许阅读到结尾，但顶部位置的百分比不一定恰为 100%。
 3. 初次章节排版同步构建整章的高度/文字布局索引，再虚拟化绘制可见段落。缓存当前章排版；切章会重建排版。极长单章第一次打开/改字号的停顿和真实约 10MB EPUB 的体验仍需专项测试。
 4. 图片先占位再按可见范围加载，实际尺寸确定后保持当前段落位置并重排；尚无整章图片尺寸预扫描。PNG/JPEG/GIF/WebP 仅静态显示，不播放动画。
-5. XHTML 需为可解析 XML。支持 UTF-8 / UTF-16LE 和常见实体替换；不修复任意畸形 HTML、不支持所有旧编码。忽略脚本与复杂 CSS；链接、CSS 字体/样式、列表编号、复杂表格、SVG、MathML、音视频、竖排和固定版式不完整或未实现。
+5. XHTML 需为可解析 XML。支持 UTF-8（含 BOM、损坏字节替换）和带 BOM 的 UTF-16LE/BE；支持 XHTML 1.0 的 252 个命名实体，保留 XML 预定义/合法数字引用、内部 DTD 声明、CDATA/注释，未知实体和裸 & 转义，非法数字码点替换为 U+FFFD。不修复任意畸形 HTML、不支持所有旧编码。忽略脚本与复杂 CSS；链接、CSS 字体/样式、列表编号、复杂表格、SVG、MathML、音视频、竖排和固定版式不完整或未实现。
 6. 不支持 DRM 加密 EPUB。未实现正文搜索、文本选择复制、页码分页或书架，这些也不在本阶段的必需交付范围。
 7. 中文回退覆盖系统已有字体中的字形；极冷僻字、彩色 emoji 或被删除的系统字体无法保证完整显示。部分字体没有细体，细档回退常规；粗档可模拟加粗。
 8. glow 使用 Windows 系统 OpenGL 与图形驱动。只提供 OpenGL 1.1 的基本显示驱动、部分远程会话等环境可能无法创建渲染上下文；本阶段未实现软件渲染后端。无额外应用运行库，但不能保证所有无合适图形驱动的干净系统环境。

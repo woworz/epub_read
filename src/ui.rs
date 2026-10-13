@@ -3,10 +3,11 @@ use crate::{
     fonts,
     model::*,
     render::{Images, Layout, HIGHLIGHTS},
-    settings::Settings,
+    settings::{toggle_opacity, Settings},
     storage,
 };
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Vec2};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -29,6 +30,11 @@ pub struct Reader {
     search: String,
     focus_search: bool,
     fullscreen: bool,
+    hwnd: Option<isize>,
+    applied_opacity: Option<u8>,
+    last_low_opacity: u8,
+    opacity_mode: (bool, bool),
+    opacity_reapply: bool,
     scroll: f32,
     scroll_request: Option<f32>,
     jump: Option<Location>,
@@ -66,7 +72,20 @@ impl Reader {
             }
         });
         let font_key = format!("{}/{}", settings.font, settings.weight);
-        Self {
+        let hwnd = cc
+            .window_handle()
+            .ok()
+            .and_then(|handle| match handle.as_raw() {
+                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+                _ => None,
+            });
+        let last_low_opacity = if settings.window_opacity < 100 {
+            settings.window_opacity
+        } else {
+            80
+        };
+        let opacity_mode = (false, settings.immersive);
+        let mut reader = Self {
             settings,
             data_dir: dir.ok(),
             book: None,
@@ -78,11 +97,16 @@ impl Reader {
             font_key,
             true_bold: font_result.unwrap_or(false),
             error,
-            info: None,
+            info: hwnd.is_none().then(|| "当前环境不支持窗口透明度".into()),
             settings_open: false,
             search: String::new(),
             focus_search: false,
             fullscreen: false,
+            hwnd,
+            applied_opacity: None,
+            last_low_opacity,
+            opacity_mode,
+            opacity_reapply: false,
             scroll: 0.,
             scroll_request: None,
             jump: None,
@@ -96,6 +120,34 @@ impl Reader {
             body_geometry: None,
             #[cfg(test)]
             progress_rect: None,
+        };
+        reader.apply_window_opacity();
+        reader
+    }
+    fn apply_window_opacity(&mut self) {
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+        let percent = self.settings.window_opacity.clamp(20, 100);
+        if self.applied_opacity == Some(percent) {
+            return;
+        }
+        match crate::native::set_window_opacity(hwnd, percent) {
+            Ok(()) => {
+                self.applied_opacity = Some(percent);
+                if percent < 100 {
+                    self.last_low_opacity = percent;
+                }
+            }
+            Err(_) => {
+                // 失败后尽量恢复可见状态，并禁用入口，避免每帧重试。
+                let _ = crate::native::set_window_opacity(hwnd, 100);
+                self.hwnd = None;
+                self.applied_opacity = None;
+                self.settings.window_opacity = 100;
+                self.dirty = true;
+                self.info = Some("当前环境不支持窗口透明度".into());
+            }
         }
     }
     fn save(&mut self) {
@@ -222,23 +274,30 @@ impl Reader {
         }
     }
     fn keyboard(&mut self, ctx: &egui::Context) {
-        let (ctrl, shift, keys, scroll) = ctx.input(|i| {
+        let (focused, modifiers, keys, scroll) = ctx.input(|i| {
             (
-                i.modifiers.ctrl,
-                i.modifiers.shift,
+                i.focused,
+                i.modifiers,
                 i.events
                     .iter()
                     .filter_map(|e| match e {
                         egui::Event::Key {
-                            key, pressed: true, ..
-                        } => Some(*key),
+                            key,
+                            pressed: true,
+                            modifiers,
+                            repeat,
+                            ..
+                        } => Some((*key, *modifiers, *repeat)),
                         _ => None,
                     })
                     .collect::<Vec<_>>(),
                 i.raw_scroll_delta.y,
             )
         });
-        if ctrl && scroll != 0. {
+        if !focused {
+            return;
+        }
+        if modifiers.ctrl && scroll != 0. {
             self.settings.size = (self.settings.size + scroll.signum()).clamp(12., 48.);
             self.dirty = true;
             ctx.input_mut(|i| {
@@ -246,7 +305,36 @@ impl Reader {
                 i.smooth_scroll_delta = Vec2::ZERO;
             });
         }
-        for key in keys {
+        for (key, modifiers, repeat) in keys {
+            let ctrl = modifiers.ctrl;
+            let shift = modifiers.shift;
+            if modifiers.alt || modifiers.mac_cmd {
+                continue;
+            }
+            if (ctrl && shift && matches!(key, Key::ArrowUp | Key::ArrowDown))
+                || (!ctrl && !shift && key == Key::F9)
+            {
+                // 消耗快捷键，避免方向键继续影响阅读位置或聚焦的控件。
+                ctx.input_mut(|i| {
+                    i.consume_key(modifiers, key);
+                });
+                if self.hwnd.is_some() {
+                    self.settings.window_opacity = match key {
+                        Key::ArrowUp => self.settings.window_opacity.saturating_add(5).min(100),
+                        Key::ArrowDown => self.settings.window_opacity.saturating_sub(5).max(20),
+                        Key::F9 if !repeat => {
+                            toggle_opacity(self.settings.window_opacity, &mut self.last_low_opacity)
+                        }
+                        _ => self.settings.window_opacity,
+                    };
+                    self.dirty = true;
+                }
+                continue;
+            }
+            // 原有 Ctrl 快捷键不接收额外 Shift，尤其不能误触发翻章。
+            if ctrl && shift {
+                continue;
+            }
             match (ctrl, key) {
                 (true, Key::O) => {
                     self.choose_file(false, false);
@@ -674,6 +762,21 @@ impl Reader {
                         ui.label("文字色");
                         ui.color_edit_button_srgb(&mut self.settings.foreground);
                         ui.end_row();
+                        ui.label("窗口透明度");
+                        ui.add_enabled_ui(self.hwnd.is_some(), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Slider::new(&mut self.settings.window_opacity, 20..=100)
+                                        .clamping(egui::SliderClamping::Edits)
+                                        .step_by(5.0)
+                                        .suffix("%"),
+                                );
+                                if ui.button("100%").clicked() {
+                                    self.settings.window_opacity = 100;
+                                }
+                            });
+                        });
+                        ui.end_row();
                     });
                 ui.separator();
                 if ui.button("恢复默认排版").clicked() {
@@ -688,6 +791,7 @@ impl Reader {
                     self.settings.set_theme(d.theme);
                 }
                 ui.small("Ctrl+滚轮 / Ctrl+加减号调字号 · F11 全屏 · F10 沉浸");
+                ui.small("Ctrl+Shift+↑ / ↓ 调透明度 · F9 切换 · 文字也会变淡");
             });
         self.settings_open = open;
         self.dirty |= before != self.settings;
@@ -1093,6 +1197,10 @@ fn toc_ui(
 }
 impl eframe::App for Reader {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.opacity_reapply {
+            self.applied_opacity = None;
+            self.opacity_reapply = false;
+        }
         ctx.set_visuals(if self.settings.theme == 2 {
             egui::Visuals::dark()
         } else {
@@ -1137,6 +1245,14 @@ impl eframe::App for Reader {
         self.marks_panel(ctx);
         self.reader(ctx);
         self.settings_panel(ctx);
+        let mode = (self.fullscreen, self.settings.immersive);
+        if self.opacity_mode != mode {
+            self.opacity_mode = mode;
+            // 全屏命令在本帧结束后执行，下一帧再补应用一次透明度。
+            self.opacity_reapply = true;
+            ctx.request_repaint();
+        }
+        self.apply_window_opacity();
         if let Some(choice) = self.picker.as_mut().and_then(|p| p.show(ctx)) {
             self.picker = None;
             match choice {
@@ -1207,6 +1323,81 @@ impl eframe::App for Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opacity_shortcuts_do_not_scroll_or_change_chapter() {
+        let (ctx, mut r) = reader();
+        // 只测键盘逻辑；不会使用这个哨兵句柄调用 Win32。
+        r.hwnd = Some(1);
+        r.settings.window_opacity = 50;
+        r.scroll = 123.;
+        let chapter = r.data.location.chapter;
+        let mut time = 0.;
+        let mut press =
+            |r: &mut Reader, key: Key, modifiers: egui::Modifiers, repeat: bool, focused: bool| {
+                time += 0.1;
+                let mut events = Vec::new();
+                if !repeat {
+                    // 独立按键先释放；egui 会自行将持续按下识别为 repeat。
+                    events.push(egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: false,
+                        repeat: false,
+                        modifiers,
+                    });
+                }
+                events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                });
+                let _ = ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        focused,
+                        modifiers,
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| r.keyboard(ctx),
+                );
+            };
+        let ctrl_shift = egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        press(&mut r, Key::ArrowUp, ctrl_shift, false, true);
+        assert_eq!(r.settings.window_opacity, 55);
+        press(&mut r, Key::ArrowDown, ctrl_shift, false, true);
+        assert_eq!(r.settings.window_opacity, 50);
+        press(&mut r, Key::ArrowLeft, ctrl_shift, false, true);
+        press(&mut r, Key::ArrowRight, ctrl_shift, false, true);
+        assert_eq!(r.data.location.chapter, chapter);
+        assert_eq!(r.scroll, 123.);
+        assert!(r.scroll_request.is_none());
+        let plain = egui::Modifiers::default();
+        press(&mut r, Key::F9, plain, false, true);
+        assert_eq!(r.settings.window_opacity, 100);
+        press(&mut r, Key::F9, plain, true, true);
+        assert_eq!(r.settings.window_opacity, 100);
+        press(&mut r, Key::F9, plain, false, true);
+        assert_eq!(r.settings.window_opacity, 50);
+        press(&mut r, Key::ArrowDown, ctrl_shift, false, false);
+        assert_eq!(r.settings.window_opacity, 50);
+        let alt = egui::Modifiers {
+            alt: true,
+            ..ctrl_shift
+        };
+        press(&mut r, Key::ArrowDown, alt, false, true);
+        assert_eq!(r.settings.window_opacity, 50);
+        r.hwnd = None;
+        press(&mut r, Key::ArrowDown, ctrl_shift, false, true);
+        assert_eq!(r.settings.window_opacity, 50);
+    }
+
     fn reader() -> (egui::Context, Reader) {
         let ctx = egui::Context::default();
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -1242,6 +1433,11 @@ mod tests {
             search: String::new(),
             focus_search: false,
             fullscreen: false,
+            hwnd: None,
+            applied_opacity: None,
+            last_low_opacity: 80,
+            opacity_mode: (false, false),
+            opacity_reapply: false,
             scroll: 0.,
             scroll_request: None,
             jump: None,
