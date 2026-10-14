@@ -44,6 +44,7 @@ pub struct Reader {
     active: usize,
     dirty: bool,
     last_save: Instant,
+    last_save_error: Option<String>,
     first_frame: bool,
     load_path: Option<PathBuf>,
     picker: Option<crate::picker::Picker>,
@@ -52,6 +53,17 @@ pub struct Reader {
     #[cfg(test)]
     progress_rect: Option<Rect>,
 }
+
+// 隐藏先于任何存储操作；保存结果只影响待保存状态，不能撤销隐藏。
+fn hide_then_save<T>(
+    state: &mut T,
+    hide: impl FnOnce(&mut T),
+    save: impl FnOnce(&mut T) -> bool,
+) -> bool {
+    hide(state);
+    save(state)
+}
+
 impl Reader {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -131,6 +143,7 @@ impl Reader {
             active: 0,
             dirty: false,
             last_save: Instant::now(),
+            last_save_error: None,
             first_frame: true,
             load_path,
             picker: None,
@@ -175,7 +188,8 @@ impl Reader {
     fn save(&mut self) -> bool {
         let Some(dir) = &self.data_dir else {
             self.last_save = Instant::now();
-            self.error = Some("保存失败：exe 旁的 data 目录不可用，请将程序放在可写目录".into());
+            self.dirty = true;
+            // 启动时已报告目录错误，保留待保存状态，不重复弹窗。
             return false;
         };
         let result = (|| {
@@ -187,12 +201,30 @@ impl Reader {
         })();
         let saved = result.is_ok();
         if let Err(e) = result {
-            self.error = Some(format!("保存失败：{e}"));
+            self.dirty = true;
+            let message = format!("保存失败：{e}");
+            if self.last_save_error.as_ref() != Some(&message) {
+                self.error = Some(message.clone());
+                self.last_save_error = Some(message);
+            }
         } else {
             self.dirty = false;
+            self.last_save_error = None;
         }
         self.last_save = Instant::now();
         saved
+    }
+    fn autosave(&mut self, ctx: &egui::Context) {
+        // 没有可用的目录时，定时重试没有意义；手动保存仍会保留 dirty。
+        if !self.dirty || self.data_dir.is_none() {
+            return;
+        }
+        if self.last_save.elapsed() > Duration::from_millis(800) {
+            self.save();
+        }
+        if self.dirty {
+            ctx.request_repaint_after(Duration::from_millis(850));
+        }
     }
     fn open(&mut self, path: &Path) {
         self.save();
@@ -1232,7 +1264,10 @@ fn toc_ui(
 }
 impl eframe::App for Reader {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let restored = self.boss_key.as_ref().is_some_and(|key| key.take_restored());
+        let restored = self
+            .boss_key
+            .as_ref()
+            .is_some_and(|key| key.take_restored());
         if let Some(error) = self.boss_key.as_ref().and_then(|key| key.take_error()) {
             self.error = Some(error.clone());
             self.boss_key_error = Some(error);
@@ -1356,7 +1391,9 @@ impl eframe::App for Reader {
         }
         if !self.fullscreen
             && !restored
-            && self.hwnd.is_some_and(crate::native::window_geometry_available)
+            && self
+                .hwnd
+                .is_some_and(crate::native::window_geometry_available)
             && !ctx.input(|i| i.viewport().minimized.unwrap_or(false))
         {
             if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
@@ -1374,29 +1411,22 @@ impl eframe::App for Reader {
             }
         }
         if self.boss_key.as_ref().is_some_and(|key| key.hide_pending()) {
-            // 先捕获完整的本帧阅读位置和有效几何，再落盘；不能等待隐藏后的帧。
-            if self.save() {
-                if let Some(key) = &self.boss_key {
-                    key.hide_after_save();
-                }
-            } else {
-                if let Some(key) = &self.boss_key {
-                    key.cancel_hide();
-                }
-                if let Some(error) = &mut self.error {
-                    error.push_str("\n本次未隐藏窗口，待保存成功后可再次使用老板键。");
-                }
-                ctx.request_repaint();
-            }
+            // 阅读位置和有效几何已在本帧捕获。先真正隐藏，再同步落盘。
+            // 保存失败保留 dirty 和错误，用户恢复窗口后才显示提示。
+            hide_then_save(
+                self,
+                |reader| {
+                    if let Some(key) = &reader.boss_key {
+                        key.hide_now();
+                    }
+                },
+                Reader::save,
+            );
             if self.boss_key.as_ref().is_some_and(|key| key.hidden()) {
                 return;
             }
-        } else if self.dirty && self.last_save.elapsed() > Duration::from_millis(800) {
-            self.save();
         }
-        if self.dirty {
-            ctx.request_repaint_after(Duration::from_millis(850));
-        }
+        self.autosave(ctx);
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save();
@@ -1409,6 +1439,154 @@ impl eframe::App for Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SaveDir(PathBuf);
+    impl SaveDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let parent = std::env::temp_dir().canonicalize().unwrap();
+            let path = parent.join(format!(
+                "epub-reader-save-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            // 仅创建并清理本测试独占的绝对路径，不覆盖已有目录。
+            assert_eq!(path.parent(), Some(parent.as_path()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for SaveDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn unavailable_data_dir_does_not_repeat_errors_or_schedule_autosave() {
+        let (ctx, mut r) = reader();
+        r.dirty = true;
+        r.error = Some("启动时已提示 data 目录不可用".into());
+        assert!(!r.save());
+        assert_eq!(r.error.as_deref(), Some("启动时已提示 data 目录不可用"));
+        r.error = None; // 用户关闭启动时的提示。
+        let mut frame = eframe::Frame::_new_kittest();
+        for tick in 0..6 {
+            assert!(!r.save());
+            assert!(r.error.is_none());
+            let expired = Instant::now() - Duration::from_secs(2);
+            r.last_save = expired;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900., 600.))),
+                    time: Some(tick as f64),
+                    ..Default::default()
+                },
+                |ctx| eframe::App::update(&mut r, ctx, &mut frame),
+            );
+            assert!(r.error.is_none());
+            assert!(r.dirty);
+            assert_eq!(r.last_save, expired, "update 不应重试不可用的目录");
+        }
+        // 单独检查保存调度，排除界面布局/动画本身请求的重绘。
+        let idle_ctx = egui::Context::default();
+        for tick in 0..6 {
+            let output = idle_ctx.run(
+                egui::RawInput {
+                    time: Some(tick as f64),
+                    ..Default::default()
+                },
+                |ctx| r.autosave(ctx),
+            );
+            if tick >= 3 {
+                assert_eq!(
+                    output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+                    Duration::MAX
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn save_error_is_reported_once_and_reset_after_success() {
+        let temp = SaveDir::new();
+        let dir = temp.0.join("data");
+        let (_, mut r) = reader();
+        r.data_dir = Some(dir.clone());
+        r.dirty = false;
+        assert!(!r.save()); // 子目录不存在，实际存储操作失败。
+        assert!(r.dirty);
+        let first_error = r.error.take().unwrap();
+        assert_eq!(r.last_save_error.as_ref(), Some(&first_error));
+        for _ in 0..3 {
+            assert!(!r.save());
+            assert!(r.error.is_none());
+            assert_eq!(r.last_save_error.as_ref(), Some(&first_error));
+        }
+
+        std::fs::create_dir(&dir).unwrap();
+        assert!(r.save());
+        assert!(!r.dirty);
+        assert!(r.last_save_error.is_none());
+        let saved: BookData =
+            storage::read(&dir.join(format!("{}.json", r.book.as_ref().unwrap().hash))).unwrap();
+        assert_eq!(saved.location, r.data.location);
+
+        // 改回同类路径不存在错误，验证成功会重新允许提示。
+        r.data_dir = Some(temp.0.join("missing"));
+        assert!(!r.save());
+        assert_eq!(r.error.as_ref(), Some(&first_error));
+        assert_eq!(r.last_save_error.as_ref(), Some(&first_error));
+        r.error = None;
+
+        // 错误文案改变时，即使未成功过，也应提示一次新的错误。
+        std::fs::create_dir(dir.join("settings.json.tmp")).unwrap();
+        r.data_dir = Some(dir);
+        assert!(!r.save());
+        let different_error = r.error.take().unwrap();
+        assert_ne!(different_error, first_error);
+        assert_eq!(r.last_save_error.as_ref(), Some(&different_error));
+        assert!(!r.save());
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn boss_key_hides_before_saving_and_stays_hidden_on_save_failure() {
+        use std::cell::{Cell, RefCell};
+        let temp = SaveDir::new();
+        let (_, mut r) = reader();
+        r.data_dir = Some(temp.0.join("missing"));
+        r.settings.window_pos = Some([120., 230.]);
+        r.settings.window_size = [900., 600.];
+        let location = r.data.location.clone();
+        let settings = r.settings.clone();
+        let hidden = Cell::new(false);
+        let calls = RefCell::new(Vec::new());
+        let saved = hide_then_save(
+            &mut r,
+            |r| {
+                assert_eq!(r.data.location, location);
+                assert!(r.settings == settings);
+                calls.borrow_mut().push("hide");
+                hidden.set(true);
+            },
+            |r| {
+                assert!(hidden.get(), "存储操作必须在窗口不可见之后");
+                assert_eq!(r.data.location, location);
+                assert!(r.settings == settings);
+                calls.borrow_mut().push("save");
+                r.save()
+            },
+        );
+        assert!(!saved);
+        assert_eq!(*calls.borrow(), ["hide", "save"]);
+        assert!(hidden.get());
+        assert!(r.dirty);
+        assert!(r.error.is_some());
+        assert!(r.last_save_error.is_some());
+    }
+
     #[test]
     fn opacity_shortcuts_do_not_scroll_or_change_chapter() {
         let (ctx, mut r) = reader();
@@ -1534,6 +1712,7 @@ mod tests {
             active: 0,
             dirty: false,
             last_save: Instant::now(),
+            last_save_error: None,
             first_frame: false,
             load_path: None,
             picker: None,
