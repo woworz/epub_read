@@ -122,11 +122,3 @@ impl Layout {
             .min(self.rows.len().saturating_sub(1))
     }
 }
-pub static HIGHLIGHTS: std::sync::LazyLock<[Color32; 4]> = std::sync::LazyLock::new(|| {
-    [
-        Color32::from_rgba_unmultiplied(225, 190, 55, 80),
-        Color32::from_rgba_unmultiplied(55, 190, 110, 75),
-        Color32::from_rgba_unmultiplied(75, 145, 230, 75),
-        Color32::from_rgba_unmultiplied(220, 100, 150, 75),
-    ]
-});

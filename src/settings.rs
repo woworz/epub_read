@@ -13,10 +13,8 @@ pub struct Settings {
     pub background: [u8; 3],
     pub foreground: [u8; 3],
     pub toc: bool,
-    pub marks: bool,
     pub immersive: bool,
     pub toc_width: f32,
-    pub marks_width: f32,
     pub collapsed_toc: Vec<String>,
     pub window_size: [f32; 2],
     pub window_pos: Option<[f32; 2]>,
@@ -53,10 +51,8 @@ impl Default for Settings {
             background: [248, 242, 226],
             foreground: [47, 43, 37],
             toc: true,
-            marks: false,
             immersive: false,
             toc_width: 235.,
-            marks_width: 260.,
             collapsed_toc: Vec::new(),
             window_size: [1100., 800.],
             window_pos: None,
@@ -92,7 +88,6 @@ impl Settings {
         self.weight = self.weight.min(2);
         self.window_opacity = self.window_opacity.clamp(20, 100);
         bounded(&mut self.toc_width, 150., 600., 235.);
-        bounded(&mut self.marks_width, 180., 600., 260.);
     }
 }
 

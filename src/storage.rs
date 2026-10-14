@@ -1,4 +1,4 @@
-use crate::model::{BookData, Mark};
+use crate::model::{BookData, Location};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     fs::{self, File},
@@ -38,19 +38,17 @@ pub fn selftest(dir: &Path) -> Result<(), String> {
     if path.exists() {
         return Err("自检临时文件已存在，拒绝覆盖".into());
     }
-    let mut data = BookData::default();
-    data.marks.push(Mark {
-        chapter_id: "章一".into(),
-        paragraph: 3,
-        text_hash: "测试哈希".into(),
-        text: "喜欢的中文段落".into(),
-        color: 2,
-        note: "往返测试".into(),
-    });
+    let data = BookData {
+        location: Location {
+            chapter: 2,
+            paragraph: 3,
+            offset: 0.5,
+        },
+    };
     let result = (|| {
         write(&path, &data)?;
         let loaded: BookData = read(&path)?;
-        if loaded.marks != data.marks || loaded.location != data.location {
+        if loaded.location != data.location {
             return Err("存储往返校验失败".into());
         }
         Ok(())

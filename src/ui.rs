@@ -2,11 +2,11 @@ use crate::{
     epub::Book,
     fonts,
     model::*,
-    render::{Images, Layout, HIGHLIGHTS},
+    render::{Images, Layout},
     settings::{toggle_opacity, Settings},
     storage,
 };
-use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Vec2};
+use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Vec2};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
     path::{Path, PathBuf},
@@ -41,7 +41,6 @@ pub struct Reader {
     scroll: f32,
     scroll_request: Option<f32>,
     jump: Option<Location>,
-    active: usize,
     dirty: bool,
     last_save: Instant,
     last_save_error: Option<String>,
@@ -140,7 +139,6 @@ impl Reader {
             scroll: 0.,
             scroll_request: None,
             jump: None,
-            active: 0,
             dirty: false,
             last_save: Instant::now(),
             last_save_error: None,
@@ -259,11 +257,6 @@ impl Reader {
                 self.book = Some(book);
                 self.images.clear();
                 self.layout.clear();
-                self.active = self
-                    .data
-                    .location
-                    .paragraph
-                    .min(self.paragraphs.len().saturating_sub(1));
                 self.dirty = true;
             }
             Err(e) => self.error = Some(e),
@@ -288,7 +281,6 @@ impl Reader {
                 paragraph: paragraph.min(self.paragraphs.len().saturating_sub(1)),
                 offset: offset.clamp(0., 1.),
             };
-            self.active = self.data.location.paragraph;
             self.jump = Some(self.data.location.clone());
             self.dirty = true;
         }
@@ -299,36 +291,6 @@ impl Reader {
             if let Some(i) = self.paragraphs.iter().position(|p| p.anchor == anchor) {
                 self.go(chapter, i, 0.);
             }
-        }
-    }
-    fn mark_index(&self, paragraph: usize) -> Option<usize> {
-        let book = self.book.as_ref()?;
-        let p = self.paragraphs.get(paragraph)?;
-        self.data.marks.iter().position(|m| {
-            m.chapter_id == book.chapters[self.data.location.chapter].id
-                && m.paragraph == paragraph
-                && m.text_hash == p.hash()
-        })
-    }
-    fn toggle_mark(&mut self, paragraph: usize) {
-        if let Some(i) = self.mark_index(paragraph) {
-            self.data.marks.remove(i);
-            self.dirty = true;
-            return;
-        }
-        if let (Some(book), Some(p)) = (&self.book, self.paragraphs.get(paragraph)) {
-            if p.text().trim().is_empty() {
-                return;
-            }
-            self.data.marks.push(Mark {
-                chapter_id: book.chapters[self.data.location.chapter].id.clone(),
-                paragraph,
-                text_hash: p.hash(),
-                text: p.text(),
-                color: 0,
-                note: String::new(),
-            });
-            self.dirty = true;
         }
     }
     fn keyboard(&mut self, ctx: &egui::Context) {
@@ -395,7 +357,7 @@ impl Reader {
             }
             match (ctrl, key) {
                 (true, Key::O) => {
-                    self.choose_file(false, false);
+                    self.choose_file();
                 }
                 (true, Key::G) | (false, Key::F2) => {
                     self.settings.toc = true;
@@ -430,7 +392,6 @@ impl Reader {
                         continue;
                     }
                     match (ctrl, key) {
-                        (true, Key::D) => self.toggle_mark(self.active),
                         (true, Key::ArrowLeft) => {
                             self.go(self.data.location.chapter.saturating_sub(1), 0, 0.)
                         }
@@ -491,27 +452,13 @@ impl Reader {
                 ui.menu_button("文件", |ui| {
                     if ui.button("打开 EPUB…   Ctrl+O").clicked() {
                         ui.close_menu();
-                        self.choose_file(false, false);
-                    }
-                    if ui.button("导出标记为 Markdown…").clicked() {
-                        ui.close_menu();
-                        self.export(false);
-                    }
-                    if ui.button("导出标记为 TXT…").clicked() {
-                        ui.close_menu();
-                        self.export(true);
+                        self.choose_file();
                     }
                     if ui.button("退出").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 self.dirty |= ui.toggle_value(&mut self.settings.toc, "目录 F4").changed();
-                self.dirty |= ui
-                    .toggle_value(&mut self.settings.marks, "我的标记")
-                    .changed();
-                if ui.button("排版设置").clicked() {
-                    self.settings_open = !self.settings_open;
-                }
                 if ui.button("沉浸 F10").clicked() {
                     self.settings.immersive = true;
                     self.dirty = true;
@@ -630,111 +577,6 @@ impl Reader {
         if let Some((c, a)) = dest {
             self.go_anchor(c, &a);
             ctx.memory_mut(|m| m.surrender_focus(egui::Id::NULL));
-        }
-    }
-    fn marks_panel(&mut self, ctx: &egui::Context) {
-        if !self.settings.marks || self.settings.immersive {
-            return;
-        }
-        let mut target = None;
-        let mut delete = None;
-        let mut changed = false;
-        let panel = egui::SidePanel::right("marks")
-            .default_width(self.settings.marks_width)
-            .width_range(180.0..=600.0)
-            .show(ctx, |ui| {
-                ui.heading("我的标记");
-                ui.horizontal(|ui| {
-                    if ui.small_button("导出 MD").clicked() {
-                        self.export(false);
-                    }
-                    if ui.small_button("导出 TXT").clicked() {
-                        self.export(true);
-                    }
-                });
-                ui.separator();
-                if let Some(book) = &self.book {
-                    egui::ScrollArea::vertical()
-                        .id_salt("marks-scroll")
-                        .show(ui, |ui| {
-                            for (ci, c) in book.chapters.iter().enumerate() {
-                                if !self.data.marks.iter().any(|m| m.chapter_id == c.id) {
-                                    continue;
-                                }
-                                egui::CollapsingHeader::new(&c.title)
-                                    .id_salt(&c.id)
-                                    .default_open(true)
-                                    .show(ui, |ui| {
-                                        for (i, m) in self
-                                            .data
-                                            .marks
-                                            .iter_mut()
-                                            .enumerate()
-                                            .filter(|(_, m)| m.chapter_id == c.id)
-                                        {
-                                            let summary: String = m.text.chars().take(65).collect();
-                                            if ui.add(egui::Button::new(summary).wrap()).clicked() {
-                                                target =
-                                                    Some((ci, m.paragraph, m.text_hash.clone()));
-                                            }
-                                            changed |= ui
-                                                .add(
-                                                    egui::TextEdit::singleline(&mut m.note)
-                                                        .hint_text("一行备注"),
-                                                )
-                                                .changed();
-                                            ui.horizontal(|ui| {
-                                                for (color, c) in HIGHLIGHTS.iter().enumerate() {
-                                                    if ui
-                                                        .add(
-                                                            egui::Button::new(
-                                                                if m.color == color {
-                                                                    "●"
-                                                                } else {
-                                                                    "  "
-                                                                },
-                                                            )
-                                                            .fill(*c),
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        m.color = color;
-                                                        changed = true;
-                                                    }
-                                                }
-                                                if ui.small_button("删除").clicked() {
-                                                    delete = Some(i);
-                                                }
-                                            });
-                                            ui.separator();
-                                        }
-                                    });
-                            }
-                            if self.data.marks.is_empty() {
-                                ui.label("右键段落或 Ctrl+D 添加喜欢的段落。");
-                            }
-                        });
-                }
-            });
-        let width = panel.response.rect.width();
-        if (self.settings.marks_width - width).abs() > 0.1 {
-            self.settings.marks_width = width;
-            self.dirty = true;
-        }
-        if let Some(i) = delete {
-            self.data.marks.remove(i);
-            changed = true;
-        }
-        self.dirty |= changed;
-        if let Some((c, p, h)) = target {
-            self.go(c, p, 0.);
-            if self.paragraphs.get(p).is_none_or(|p| p.hash() != h) {
-                if let Some(i) = self.paragraphs.iter().position(|p| p.hash() == h) {
-                    self.go(c, i, 0.);
-                } else {
-                    self.error = Some("标记的原文在当前章节中无法定位".into());
-                }
-            }
         }
     }
     fn settings_panel(&mut self, ctx: &egui::Context) {
@@ -863,14 +705,7 @@ impl Reader {
         self.settings_open = open;
         self.dirty |= before != self.settings;
     }
-    fn export(&mut self, txt: bool) {
-        if self.book.is_none() {
-            self.info = Some("请先打开一本书".into());
-            return;
-        }
-        self.choose_file(true, txt);
-    }
-    fn choose_file(&mut self, save: bool, txt: bool) {
+    fn choose_file(&mut self) {
         let directory = Path::new(&self.settings.last_book)
             .parent()
             .filter(|p| p.is_dir())
@@ -881,51 +716,7 @@ impl Reader {
                     .and_then(|p| p.parent().map(PathBuf::from))
             })
             .unwrap_or_else(|| PathBuf::from("C:\\"));
-        self.picker = Some(crate::picker::Picker::new(save, txt, directory));
-    }
-    fn export_to(&mut self, path: PathBuf, txt: bool) {
-        let Some(book) = &self.book else {
-            self.info = Some("请先打开一本书".into());
-            return;
-        };
-        let mut text = if txt {
-            format!("{}\n作者：{}\n\n", book.title, book.author)
-        } else {
-            format!("# {}\n\n作者：{}\n\n", book.title, book.author)
-        };
-        for c in &book.chapters {
-            let marks: Vec<_> = self
-                .data
-                .marks
-                .iter()
-                .filter(|m| m.chapter_id == c.id)
-                .collect();
-            if marks.is_empty() {
-                continue;
-            }
-            text.push_str(&format!("{}{}\n\n", if txt { "" } else { "## " }, c.title));
-            for m in marks {
-                if txt {
-                    text.push_str(&m.text);
-                } else {
-                    text.push_str(
-                        &m.text
-                            .lines()
-                            .map(|s| format!("> {s}"))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    );
-                }
-                text.push_str("\n\n");
-                if !m.note.is_empty() {
-                    text.push_str(&format!("备注：{}\n\n", m.note));
-                }
-            }
-        }
-        match std::fs::write(&path, text) {
-            Ok(()) => self.info = Some(format!("标记已导出至 {}", path.display())),
-            Err(e) => self.error = Some(format!("导出失败：{e}")),
-        }
+        self.picker = Some(crate::picker::Picker::new(directory));
     }
     fn load_visible_images(&mut self, ctx: &egui::Context, visible: Rect) {
         let Some(book) = &mut self.book else {
@@ -973,17 +764,17 @@ impl Reader {
             self.settings.background[1],
             self.settings.background[2],
         );
-        egui::CentralPanel::default()
+        let response = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(bg))
             .show(ctx, |ui| {
                 if self.book.is_none() {
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() * 0.25);
                         ui.heading("便携 EPUB 阅读器");
-                        ui.label("离线阅读 · 段落收藏 · 数据随程序迁移");
+                        ui.label("离线阅读 · 数据随程序迁移");
                         ui.add_space(20.);
                         if ui.button("打开 EPUB…").clicked() {
-                            self.choose_file(false, false);
+                            self.choose_file();
                         }
                         ui.label("也可以拖入 EPUB 文件");
                     });
@@ -1035,7 +826,6 @@ impl Reader {
                 } else {
                     0.
                 };
-                let mut action = None;
                 let mut visible = Rect::NOTHING;
                 let mut area = egui::ScrollArea::vertical()
                     .id_salt("body-scroll")
@@ -1062,14 +852,6 @@ impl Reader {
                         );
                         if !ui.is_rect_visible(r) {
                             continue;
-                        }
-                        let mark = self.mark_index(i);
-                        if let Some(m) = mark {
-                            ui.painter().rect_filled(
-                                r.expand(4.),
-                                3.,
-                                HIGHLIGHTS[self.data.marks[m].color.min(3)],
-                            );
                         }
                         if let Some(g) = &row.galley {
                             ui.painter().galley(r.min, g.clone(), Color32::WHITE);
@@ -1114,50 +896,6 @@ impl Reader {
                                 egui::Stroke::new(1.0_f32, Color32::GRAY),
                             );
                         }
-                        let response = ui.interact(
-                            r,
-                            egui::Id::new(("paragraph", self.data.location.chapter, i)),
-                            Sense::click(),
-                        );
-                        if response.clicked() || response.secondary_clicked() {
-                            self.active = i;
-                        }
-                        response.context_menu(|ui| {
-                            if ui
-                                .button(if mark.is_some() {
-                                    "取消喜欢的段落"
-                                } else {
-                                    "标记为喜欢的段落"
-                                })
-                                .clicked()
-                            {
-                                action = Some(i);
-                                ui.close_menu();
-                            }
-                            if let Some(m) = mark {
-                                for (color, c) in HIGHLIGHTS.iter().enumerate() {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(format!("高亮颜色 {}", color + 1))
-                                                .fill(*c),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.data.marks[m].color = color;
-                                        self.dirty = true;
-                                    }
-                                }
-                                if ui
-                                    .add(
-                                        egui::TextEdit::singleline(&mut self.data.marks[m].note)
-                                            .hint_text("一行备注"),
-                                    )
-                                    .changed()
-                                {
-                                    self.dirty = true;
-                                }
-                            }
-                        });
                     }
                 });
                 self.scroll = output.state.offset.y;
@@ -1173,14 +911,10 @@ impl Reader {
                     {
                         self.data.location.paragraph = index;
                         self.data.location.offset = offset;
-                        self.active = index;
                         self.dirty = true;
                         // 底栏先于正文绘制，需要紧接一帧显示本帧得到的位置。
                         ctx.request_repaint();
                     }
-                }
-                if let Some(i) = action {
-                    self.toggle_mark(i);
                 }
                 self.load_visible_images(ctx, visible);
                 let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.);
@@ -1204,6 +938,43 @@ impl Reader {
                     ctx.request_repaint();
                 }
             });
+        // 只检测右键，不在阅读区叠加点击/拖拽交互，保留 ScrollArea 的输入处理。
+        let menu_id = egui::Id::new("reader-context-menu");
+        let mut menu = egui::menu::BarState::load(ctx, menu_id);
+        let (pos, secondary_clicked, pressed) = ctx.input(|i| {
+            (
+                i.pointer.interact_pos(),
+                i.pointer.button_clicked(egui::PointerButton::Secondary),
+                i.pointer.any_pressed(),
+            )
+        });
+        if let Some(pos) = pos {
+            let in_menu = menu
+                .as_ref()
+                .is_some_and(|root| root.menu_state.read().area_contains(pos));
+            if !in_menu {
+                if secondary_clicked
+                    && ctx.rect_contains_pointer(response.response.layer_id, response.response.rect)
+                {
+                    egui::menu::MenuRoot::handle_menu_response(
+                        &mut menu,
+                        egui::menu::MenuResponse::Create(pos, response.response.id),
+                    );
+                } else if pressed {
+                    egui::menu::MenuRoot::handle_menu_response(
+                        &mut menu,
+                        egui::menu::MenuResponse::Close,
+                    );
+                }
+            }
+        }
+        menu.show(&response.response, |ui| {
+            if ui.button("排版设置…   Ctrl+,").clicked() {
+                self.settings_open = !self.settings_open;
+                ui.close_menu();
+            }
+        });
+        menu.store(ctx, menu_id);
     }
 }
 fn toc_ui(
@@ -1328,7 +1099,6 @@ impl eframe::App for Reader {
         self.toolbar(ctx);
         self.footer(ctx);
         self.toc_panel(ctx);
-        self.marks_panel(ctx);
         self.reader(ctx);
         self.settings_panel(ctx);
         let mode = (self.fullscreen, self.settings.immersive);
@@ -1349,13 +1119,9 @@ impl eframe::App for Reader {
             self.picker = None;
             match choice {
                 crate::picker::Choice::Cancel => {}
-                crate::picker::Choice::File(path, save, txt) => {
-                    if save {
-                        self.export_to(path, txt);
-                    } else {
-                        self.load_path = Some(path);
-                        ctx.request_repaint();
-                    }
+                crate::picker::Choice::File(path) => {
+                    self.load_path = Some(path);
+                    ctx.request_repaint();
                 }
             }
         }
@@ -1679,7 +1445,6 @@ mod tests {
                 chapter: 1,
                 ..Default::default()
             },
-            ..Default::default()
         };
         let reader = Reader {
             settings,
@@ -1709,7 +1474,6 @@ mod tests {
             scroll: 0.,
             scroll_request: None,
             jump: None,
-            active: 0,
             dirty: false,
             last_save: Instant::now(),
             last_save_error: None,
@@ -1771,7 +1535,6 @@ mod tests {
                 r.toolbar(ctx);
                 r.footer(ctx);
                 r.toc_panel(ctx);
-                r.marks_panel(ctx);
                 r.reader(ctx);
             },
         );
@@ -1992,7 +1755,7 @@ mod tests {
             full_frame(&ctx, &mut r, &mut time, vec![]);
             assert!((r.scroll - scroll).abs() < 0.1, "键盘滚动不得在下一帧还原");
         }
-        // 目录锚点、标记使用的 go、字体/行距/宽度重排均只消费一次请求。
+        // 目录锚点、go 跳转、字体/行距/宽度重排均只消费一次请求。
         r.go_anchor(1, "p100");
         full_frame(&ctx, &mut r, &mut time, vec![]);
         assert_eq!(r.data.location.paragraph, 100);

@@ -23,13 +23,9 @@ impl Paragraph {
     pub fn text(&self) -> String {
         self.runs.iter().map(|r| r.text.as_str()).collect()
     }
-    pub fn hash(&self) -> String {
-        crate::epub::hash(self.text().as_bytes())
-    }
 }
 #[derive(Clone)]
 pub struct Chapter {
-    pub id: String,
     pub path: String,
     pub title: String,
 }
@@ -47,18 +43,8 @@ pub struct Location {
     pub paragraph: usize,
     pub offset: f32,
 }
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub struct Mark {
-    pub chapter_id: String,
-    pub paragraph: usize,
-    pub text_hash: String,
-    pub text: String,
-    pub color: usize,
-    pub note: String,
-}
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BookData {
     pub location: Location,
-    pub marks: Vec<Mark>,
 }

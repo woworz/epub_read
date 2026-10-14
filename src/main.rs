@@ -18,7 +18,7 @@ fn main() {
         let result = if args[0] == "--selftest-store" {
             storage::data_dir()
                 .and_then(|d| storage::selftest(&d))
-                .map(|_| "存储自检通过：写入标记 → 重新读取 → 校验 → 清理\n".to_string())
+                .map(|_| "存储自检通过：写入阅读位置 → 重新读取 → 校验 → 清理\n".to_string())
         } else {
             args.get(1)
                 .ok_or_else(|| "用法：epub-reader.exe --selftest <epub路径>".into())

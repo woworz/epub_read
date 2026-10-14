@@ -9,9 +9,6 @@ use std::{
 };
 use zip::ZipArchive;
 const MAX_ENTRY: u64 = 64 * 1024 * 1024;
-pub fn hash(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
-}
 pub struct Book {
     pub hash: String,
     pub title: String,
@@ -612,7 +609,6 @@ impl Book {
                 .get(id)
                 .ok_or_else(|| format!("manifest 缺少 {id}"))?;
             chapters.push(Chapter {
-                id: id.into(),
                 path: p.clone(),
                 title: format!("第 {} 章", chapters.len() + 1),
             });
