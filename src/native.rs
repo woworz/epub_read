@@ -1,3 +1,5 @@
+mod boss_key;
+pub use boss_key::{window_geometry_available, BossKey};
 use std::{ffi::c_void, path::Path};
 #[link(name = "kernel32")]
 unsafe extern "system" {

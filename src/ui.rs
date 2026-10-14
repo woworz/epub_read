@@ -31,6 +31,9 @@ pub struct Reader {
     focus_search: bool,
     fullscreen: bool,
     hwnd: Option<isize>,
+    boss_key: Option<crate::native::BossKey>,
+    boss_key_error: Option<String>,
+    opacity_available: bool,
     applied_opacity: Option<u8>,
     last_low_opacity: u8,
     opacity_mode: (bool, bool),
@@ -85,6 +88,18 @@ impl Reader {
             80
         };
         let opacity_mode = (false, settings.immersive);
+        let (boss_key, boss_key_error) = match hwnd {
+            Some(hwnd) => match crate::native::BossKey::register(hwnd, &cc.egui_ctx) {
+                Ok(key) => (Some(key), None),
+                Err(e) => (None, Some(format!("老板键 Ctrl+Alt+H 注册失败：{e}。正常阅读仍可使用，本实例不会隐藏窗口。"))),
+            },
+            None => (None, Some("老板键 Ctrl+Alt+H 注册失败：无法获取有效窗口句柄。正常阅读仍可使用，本实例不会隐藏窗口。".into())),
+        };
+        let error = match (error, &boss_key_error) {
+            (Some(e), Some(boss_error)) => Some(format!("{e}\n{boss_error}")),
+            (None, Some(boss_error)) => Some(boss_error.clone()),
+            (error, None) => error,
+        };
         let mut reader = Self {
             settings,
             data_dir: dir.ok(),
@@ -103,6 +118,9 @@ impl Reader {
             focus_search: false,
             fullscreen: false,
             hwnd,
+            boss_key,
+            boss_key_error,
+            opacity_available: hwnd.is_some(),
             applied_opacity: None,
             last_low_opacity,
             opacity_mode,
@@ -125,6 +143,9 @@ impl Reader {
         reader
     }
     fn apply_window_opacity(&mut self) {
+        if !self.opacity_available {
+            return;
+        }
         let Some(hwnd) = self.hwnd else {
             return;
         };
@@ -142,7 +163,8 @@ impl Reader {
             Err(_) => {
                 // 失败后尽量恢复可见状态，并禁用入口，避免每帧重试。
                 let _ = crate::native::set_window_opacity(hwnd, 100);
-                self.hwnd = None;
+                // HWND 继续供老板键和窗口几何检查使用，只禁用透明度。
+                self.opacity_available = false;
                 self.applied_opacity = None;
                 self.settings.window_opacity = 100;
                 self.dirty = true;
@@ -150,9 +172,11 @@ impl Reader {
             }
         }
     }
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         let Some(dir) = &self.data_dir else {
-            return;
+            self.last_save = Instant::now();
+            self.error = Some("保存失败：exe 旁的 data 目录不可用，请将程序放在可写目录".into());
+            return false;
         };
         let result = (|| {
             storage::write(&dir.join("settings.json"), &self.settings)?;
@@ -161,12 +185,14 @@ impl Reader {
             }
             Ok::<(), String>(())
         })();
+        let saved = result.is_ok();
         if let Err(e) = result {
             self.error = Some(format!("保存失败：{e}"));
         } else {
             self.dirty = false;
         }
         self.last_save = Instant::now();
+        saved
     }
     fn open(&mut self, path: &Path) {
         self.save();
@@ -318,7 +344,7 @@ impl Reader {
                 ctx.input_mut(|i| {
                     i.consume_key(modifiers, key);
                 });
-                if self.hwnd.is_some() {
+                if self.opacity_available && self.hwnd.is_some() {
                     self.settings.window_opacity = match key {
                         Key::ArrowUp => self.settings.window_opacity.saturating_add(5).min(100),
                         Key::ArrowDown => self.settings.window_opacity.saturating_sub(5).max(20),
@@ -763,7 +789,7 @@ impl Reader {
                         ui.color_edit_button_srgb(&mut self.settings.foreground);
                         ui.end_row();
                         ui.label("窗口透明度");
-                        ui.add_enabled_ui(self.hwnd.is_some(), |ui| {
+                        ui.add_enabled_ui(self.opacity_available, |ui| {
                             ui.horizontal(|ui| {
                                 ui.add(
                                     egui::Slider::new(&mut self.settings.window_opacity, 20..=100)
@@ -792,6 +818,15 @@ impl Reader {
                 }
                 ui.small("Ctrl+滚轮 / Ctrl+加减号调字号 · F11 全屏 · F10 沉浸");
                 ui.small("Ctrl+Shift+↑ / ↓ 调透明度 · F9 切换 · 文字也会变淡");
+                ui.separator();
+                ui.label("老板键：Ctrl+Alt+H（全局）");
+                ui.small("按一次隐藏整个窗口，再按一次恢复；失去焦点时仍有效。");
+                ui.small("隐藏后任务栏及 Alt+Tab 均不可见，请用同一快捷键恢复。");
+                if let Some(error) = &self.boss_key_error {
+                    ui.colored_label(Color32::from_rgb(190, 65, 65), error);
+                } else if self.boss_key.as_ref().is_some_and(|key| key.available()) {
+                    ui.small("状态：已注册；松开后再次按下才切换，隐藏状态不会保存。");
+                }
             });
         self.settings_open = open;
         self.dirty |= before != self.settings;
@@ -1197,6 +1232,22 @@ fn toc_ui(
 }
 impl eframe::App for Reader {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let restored = self.boss_key.as_ref().is_some_and(|key| key.take_restored());
+        if let Some(error) = self.boss_key.as_ref().and_then(|key| key.take_error()) {
+            self.error = Some(error.clone());
+            self.boss_key_error = Some(error);
+        }
+        if self.boss_key.as_ref().is_some_and(|key| key.hidden()) {
+            // 系统可能送来一次残留重绘。冻结阅读/UI 状态，不安排定时重绘。
+            // 恢复完全由 WM_HOTKEY 中的 ShowWindow 唤醒，不依赖此分支运行。
+            return;
+        }
+        if restored {
+            self.applied_opacity = None;
+            if self.jump.is_none() {
+                self.scroll_request = Some(self.scroll);
+            }
+        }
         if self.opacity_reapply {
             self.applied_opacity = None;
             self.opacity_reapply = false;
@@ -1253,6 +1304,12 @@ impl eframe::App for Reader {
             ctx.request_repaint();
         }
         self.apply_window_opacity();
+        if restored {
+            // Visible(true) 在本帧结束后交给 winit，会重新设置扩展样式。
+            // 再重绘一帧补回分层透明度，不重建 GL 上下文或书籍排版。
+            self.opacity_reapply = true;
+            ctx.request_repaint();
+        }
         if let Some(choice) = self.picker.as_mut().and_then(|p| p.show(ctx)) {
             self.picker = None;
             match choice {
@@ -1297,18 +1354,44 @@ impl eframe::App for Reader {
                 self.info = None;
             }
         }
-        if !self.fullscreen {
+        if !self.fullscreen
+            && !restored
+            && self.hwnd.is_some_and(crate::native::window_geometry_available)
+            && !ctx.input(|i| i.viewport().minimized.unwrap_or(false))
+        {
             if let Some(rect) = ctx.input(|i| i.viewport().inner_rect) {
                 let size = [rect.width(), rect.height()];
                 let pos = Some([rect.min.x, rect.min.y]);
-                if self.settings.window_size != size || self.settings.window_pos != pos {
+                if size.iter().all(|v| v.is_finite() && *v > 0.)
+                    && rect.min.x.is_finite()
+                    && rect.min.y.is_finite()
+                    && (self.settings.window_size != size || self.settings.window_pos != pos)
+                {
                     self.settings.window_size = size;
                     self.settings.window_pos = pos;
                     self.dirty = true;
                 }
             }
         }
-        if self.dirty && self.last_save.elapsed() > Duration::from_millis(800) {
+        if self.boss_key.as_ref().is_some_and(|key| key.hide_pending()) {
+            // 先捕获完整的本帧阅读位置和有效几何，再落盘；不能等待隐藏后的帧。
+            if self.save() {
+                if let Some(key) = &self.boss_key {
+                    key.hide_after_save();
+                }
+            } else {
+                if let Some(key) = &self.boss_key {
+                    key.cancel_hide();
+                }
+                if let Some(error) = &mut self.error {
+                    error.push_str("\n本次未隐藏窗口，待保存成功后可再次使用老板键。");
+                }
+                ctx.request_repaint();
+            }
+            if self.boss_key.as_ref().is_some_and(|key| key.hidden()) {
+                return;
+            }
+        } else if self.dirty && self.last_save.elapsed() > Duration::from_millis(800) {
             self.save();
         }
         if self.dirty {
@@ -1317,6 +1400,9 @@ impl eframe::App for Reader {
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save();
+        if let Some(key) = self.boss_key.take() {
+            key.shutdown();
+        }
     }
 }
 
@@ -1328,6 +1414,7 @@ mod tests {
         let (ctx, mut r) = reader();
         // 只测键盘逻辑；不会使用这个哨兵句柄调用 Win32。
         r.hwnd = Some(1);
+        r.opacity_available = true;
         r.settings.window_opacity = 50;
         r.scroll = 123.;
         let chapter = r.data.location.chapter;
@@ -1434,6 +1521,9 @@ mod tests {
             focus_search: false,
             fullscreen: false,
             hwnd: None,
+            boss_key: None,
+            boss_key_error: None,
+            opacity_available: false,
             applied_opacity: None,
             last_low_opacity: 80,
             opacity_mode: (false, false),
