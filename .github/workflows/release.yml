@@ -1,0 +1,69 @@
+name: Windows MSVC Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.0"
+          targets: x86_64-pc-windows-msvc
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Check release version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag does not match Cargo.toml version: $version"
+          }
+      - name: Build Windows x64 with static CRT
+        shell: cmd
+        run: build.bat
+      - name: Inspect DLL dependencies and calculate checksum
+        shell: pwsh
+        run: |
+          $dependencies = & dumpbin /dependents epub-reader.exe
+          if ($LASTEXITCODE -ne 0) { throw "DLL inspection failed" }
+          $dependencies | Write-Output
+          if (($dependencies -join "`n") -match '(?i)(vcruntime|msvcp|libgcc|libstdc\+\+|libwinpthread).*\.dll') {
+            throw "Unexpected compiler runtime DLL dependency"
+          }
+          $hash = (Get-FileHash epub-reader.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  epub-reader.exe" | Set-Content SHA256SUMS.txt -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        with:
+          name: epub-reader-windows-msvc
+          path: |
+            epub-reader.exe
+            SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @'
+          Windows 10/11 x64 便携 EPUB 阅读器，下载 epub-reader.exe 后直接运行。
+
+          - 删除段落标记及相关高亮、备注、导出和 Ctrl+D 功能；书籍数据仅保存阅读位置。
+          - 排版设置移至整个阅读区右键菜单，保留 Ctrl+,；沉浸模式和未打开书籍时均可使用。
+          - 老板键、窗口透明度、实体解码和滚动/翻章逻辑保持不变。
+
+          构建：Rust 1.99.0，x86_64-pc-windows-msvc，release，静态 CRT。
+          已检查 DLL 依赖，未新增或运行测试，未进行 GUI 运行验证。
+          SHA-256 校验值见 SHA256SUMS.txt；使用说明和第三方许可见仓库。
+          '@ | Set-Content release-notes.md -Encoding utf8NoBOM
+          gh release create $env:GITHUB_REF_NAME epub-reader.exe SHA256SUMS.txt --verify-tag --title "EPUB Reader $env:GITHUB_REF_NAME" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }
