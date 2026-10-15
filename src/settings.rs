@@ -20,6 +20,7 @@ pub struct Settings {
     pub window_pos: Option<[f32; 2]>,
     #[serde(default = "default_window_opacity")]
     pub window_opacity: u8,
+    pub auto_hide_on_mouse_leave: bool,
     pub last_book: String,
 }
 fn default_window_opacity() -> u8 {
@@ -57,6 +58,7 @@ impl Default for Settings {
             window_size: [1100., 800.],
             window_pos: None,
             window_opacity: default_window_opacity(),
+            auto_hide_on_mouse_leave: false,
             last_book: String::new(),
         }
     }
@@ -137,5 +139,18 @@ mod tests {
         assert_eq!(toggle_opacity(100, &mut last), 20);
         last = 150;
         assert_eq!(toggle_opacity(100, &mut last), 95);
+    }
+
+    #[test]
+    fn auto_hide_defaults_off_and_round_trips() {
+        let mut settings: Settings = serde_json::from_str(r#"{"size":24}"#).unwrap();
+        assert!(!settings.auto_hide_on_mouse_leave);
+        settings.auto_hide_on_mouse_leave = true;
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(
+            serde_json::from_str::<Settings>(&saved)
+                .unwrap()
+                .auto_hide_on_mouse_leave
+        );
     }
 }

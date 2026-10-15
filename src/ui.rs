@@ -31,7 +31,7 @@ pub struct Reader {
     focus_search: bool,
     fullscreen: bool,
     hwnd: Option<isize>,
-    boss_key: Option<crate::native::BossKey>,
+    visibility: Option<crate::native::WindowVisibility>,
     boss_key_error: Option<String>,
     opacity_available: bool,
     applied_opacity: Option<u8>,
@@ -99,12 +99,25 @@ impl Reader {
             80
         };
         let opacity_mode = (false, settings.immersive);
-        let (boss_key, boss_key_error) = match hwnd {
-            Some(hwnd) => match crate::native::BossKey::register(hwnd, &cc.egui_ctx) {
-                Ok(key) => (Some(key), None),
-                Err(e) => (None, Some(format!("老板键 Ctrl+Alt+H 注册失败：{e}。正常阅读仍可使用，本实例不会隐藏窗口。"))),
+        let (visibility, boss_key_error) = match hwnd {
+            Some(hwnd) => match crate::native::WindowVisibility::register(hwnd, &cc.egui_ctx) {
+                Ok(key) => {
+                    let error = key.hotkey_error().map(|e| {
+                        format!("老板键 Ctrl+Alt+H 注册失败：{e}。鼠标自动隐藏仍可使用。")
+                    });
+                    (Some(key), error)
+                }
+                Err(e) => (
+                    None,
+                    Some(format!(
+                        "老板键 Ctrl+Alt+H 注册失败：{e}。正常阅读仍可使用。"
+                    )),
+                ),
             },
-            None => (None, Some("老板键 Ctrl+Alt+H 注册失败：无法获取有效窗口句柄。正常阅读仍可使用，本实例不会隐藏窗口。".into())),
+            None => (
+                None,
+                Some("老板键 Ctrl+Alt+H 注册失败：无法获取有效窗口句柄。正常阅读仍可使用。".into()),
+            ),
         };
         let error = match (error, &boss_key_error) {
             (Some(e), Some(boss_error)) => Some(format!("{e}\n{boss_error}")),
@@ -129,7 +142,7 @@ impl Reader {
             focus_search: false,
             fullscreen: false,
             hwnd,
-            boss_key,
+            visibility,
             boss_key_error,
             opacity_available: hwnd.is_some(),
             applied_opacity: None,
@@ -677,7 +690,27 @@ impl Reader {
                             });
                         });
                         ui.end_row();
+                        ui.label("鼠标自动显隐");
+                        ui.add_enabled(
+                            self.visibility
+                                .as_ref()
+                                .is_some_and(|v| v.auto_hide_available()),
+                            egui::Checkbox::new(
+                                &mut self.settings.auto_hide_on_mouse_leave,
+                                "移出隐藏，移入显示",
+                            ),
+                        );
+                        ui.end_row();
                     });
+                ui.small("开启后，鼠标离开窗口即隐藏；回到原窗口区域自动显示。开关自动保存。");
+                ui.small("老板键主动隐藏后，仍需 Ctrl+Alt+H 恢复。");
+                if !self
+                    .visibility
+                    .as_ref()
+                    .is_some_and(|v| v.auto_hide_available())
+                {
+                    ui.small("当前环境不支持鼠标自动显隐。");
+                }
                 ui.separator();
                 if ui.button("恢复默认排版").clicked() {
                     let d = Settings::default();
@@ -698,7 +731,7 @@ impl Reader {
                 ui.small("隐藏后任务栏及 Alt+Tab 均不可见，请用同一快捷键恢复。");
                 if let Some(error) = &self.boss_key_error {
                     ui.colored_label(Color32::from_rgb(190, 65, 65), error);
-                } else if self.boss_key.as_ref().is_some_and(|key| key.available()) {
+                } else if self.visibility.as_ref().is_some_and(|key| key.available()) {
                     ui.small("状态：已注册；松开后再次按下才切换，隐藏状态不会保存。");
                 }
             });
@@ -1036,16 +1069,16 @@ fn toc_ui(
 impl eframe::App for Reader {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let restored = self
-            .boss_key
+            .visibility
             .as_ref()
             .is_some_and(|key| key.take_restored());
-        if let Some(error) = self.boss_key.as_ref().and_then(|key| key.take_error()) {
+        if let Some(error) = self.visibility.as_ref().and_then(|key| key.take_error()) {
             self.error = Some(error.clone());
             self.boss_key_error = Some(error);
         }
-        if self.boss_key.as_ref().is_some_and(|key| key.hidden()) {
+        if self.visibility.as_ref().is_some_and(|key| key.hidden()) {
             // 系统可能送来一次残留重绘。冻结阅读/UI 状态，不安排定时重绘。
-            // 恢复完全由 WM_HOTKEY 中的 ShowWindow 唤醒，不依赖此分支运行。
+            // 恢复由 WM_HOTKEY / WM_TIMER 中的 ShowWindow 唤醒。
             return;
         }
         if restored {
@@ -1176,19 +1209,30 @@ impl eframe::App for Reader {
                 }
             }
         }
-        if self.boss_key.as_ref().is_some_and(|key| key.hide_pending()) {
+        if let Some(visibility) = &self.visibility {
+            if let Err(error) = visibility.set_auto_hide(self.settings.auto_hide_on_mouse_leave) {
+                self.settings.auto_hide_on_mouse_leave = false;
+                self.dirty = true;
+                self.info = Some(error);
+                ctx.request_repaint();
+            }
+        }
+        // 全屏样式命令在帧末才执行，等下一帧再提交鼠标隐藏，避免被重新显示。
+        if self.visibility.as_ref().is_some_and(|key| {
+            key.hide_pending() && !(key.mouse_hide_pending() && self.opacity_reapply)
+        }) {
             // 阅读位置和有效几何已在本帧捕获。先真正隐藏，再同步落盘。
             // 保存失败保留 dirty 和错误，用户恢复窗口后才显示提示。
             hide_then_save(
                 self,
                 |reader| {
-                    if let Some(key) = &reader.boss_key {
+                    if let Some(key) = &reader.visibility {
                         key.hide_now();
                     }
                 },
                 Reader::save,
             );
-            if self.boss_key.as_ref().is_some_and(|key| key.hidden()) {
+            if self.visibility.as_ref().is_some_and(|key| key.hidden()) {
                 return;
             }
         }
@@ -1196,7 +1240,7 @@ impl eframe::App for Reader {
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save();
-        if let Some(key) = self.boss_key.take() {
+        if let Some(key) = self.visibility.take() {
             key.shutdown();
         }
     }
@@ -1464,7 +1508,7 @@ mod tests {
             focus_search: false,
             fullscreen: false,
             hwnd: None,
-            boss_key: None,
+            visibility: None,
             boss_key_error: None,
             opacity_available: false,
             applied_opacity: None,

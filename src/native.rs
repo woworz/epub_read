@@ -1,6 +1,7 @@
-mod boss_key;
-pub use boss_key::{window_geometry_available, BossKey};
+mod visibility_state;
+mod window_visibility;
 use std::{ffi::c_void, path::Path};
+pub use window_visibility::{window_geometry_available, WindowVisibility};
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn SetLastError(error: u32);
