@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod epub;
 mod fonts;
+mod hotkey;
 mod model;
 mod native;
 mod picker;

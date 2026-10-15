@@ -1,6 +1,7 @@
 use crate::{
     epub::Book,
     fonts,
+    hotkey::BossShortcut,
     model::*,
     render::{Images, Layout},
     settings::{toggle_opacity, Settings},
@@ -33,6 +34,8 @@ pub struct Reader {
     hwnd: Option<isize>,
     visibility: Option<crate::native::WindowVisibility>,
     boss_key_error: Option<String>,
+    boss_shortcut_draft: BossShortcut,
+    boss_shortcut_error: Option<String>,
     opacity_available: bool,
     applied_opacity: Option<u8>,
     last_low_opacity: u8,
@@ -99,24 +102,32 @@ impl Reader {
             80
         };
         let opacity_mode = (false, settings.immersive);
+        let boss_shortcut_draft = settings.boss_shortcut;
+        let shortcut_label = settings.boss_shortcut.label();
         let (visibility, boss_key_error) = match hwnd {
-            Some(hwnd) => match crate::native::WindowVisibility::register(hwnd, &cc.egui_ctx) {
+            Some(hwnd) => match crate::native::WindowVisibility::register(
+                hwnd,
+                &cc.egui_ctx,
+                settings.boss_shortcut,
+            ) {
                 Ok(key) => {
                     let error = key.hotkey_error().map(|e| {
-                        format!("老板键 Ctrl+Alt+H 注册失败：{e}。鼠标自动隐藏仍可使用。")
+                        format!("老板键 {shortcut_label} 注册失败：{e}。鼠标自动隐藏仍可使用。")
                     });
                     (Some(key), error)
                 }
                 Err(e) => (
                     None,
                     Some(format!(
-                        "老板键 Ctrl+Alt+H 注册失败：{e}。正常阅读仍可使用。"
+                        "老板键 {shortcut_label} 注册失败：{e}。正常阅读仍可使用。"
                     )),
                 ),
             },
             None => (
                 None,
-                Some("老板键 Ctrl+Alt+H 注册失败：无法获取有效窗口句柄。正常阅读仍可使用。".into()),
+                Some(format!(
+                    "老板键 {shortcut_label} 注册失败：无法获取有效窗口句柄。正常阅读仍可使用。"
+                )),
             ),
         };
         let error = match (error, &boss_key_error) {
@@ -144,6 +155,8 @@ impl Reader {
             hwnd,
             visibility,
             boss_key_error,
+            boss_shortcut_draft,
+            boss_shortcut_error: None,
             opacity_available: hwnd.is_some(),
             applied_opacity: None,
             last_low_opacity,
@@ -472,6 +485,13 @@ impl Reader {
                     }
                 });
                 self.dirty |= ui.toggle_value(&mut self.settings.toc, "目录 F4").changed();
+                if ui
+                    .selectable_label(self.settings_open, "排版设置")
+                    .on_hover_text("Ctrl+,")
+                    .clicked()
+                {
+                    self.settings_open = !self.settings_open;
+                }
                 if ui.button("沉浸 F10").clicked() {
                     self.settings.immersive = true;
                     self.dirty = true;
@@ -600,7 +620,8 @@ impl Reader {
         let mut open = true;
         egui::Window::new("排版设置 · Ctrl+,")
             .open(&mut open)
-            .default_width(380.)
+            .default_width(400.)
+            .vscroll(true)
             .resizable(false)
             .show(ctx, |ui| {
                 egui::Grid::new("settings-grid")
@@ -703,7 +724,10 @@ impl Reader {
                         ui.end_row();
                     });
                 ui.small("开启后，鼠标离开窗口即隐藏；回到原窗口区域自动显示。开关自动保存。");
-                ui.small("老板键主动隐藏后，仍需 Ctrl+Alt+H 恢复。");
+                ui.small(format!(
+                    "老板键主动隐藏后，仍需 {} 恢复。",
+                    self.settings.boss_shortcut.label()
+                ));
                 if !self
                     .visibility
                     .as_ref()
@@ -726,7 +750,53 @@ impl Reader {
                 ui.small("Ctrl+滚轮 / Ctrl+加减号调字号 · F11 全屏 · F10 沉浸");
                 ui.small("Ctrl+Shift+↑ / ↓ 调透明度 · F9 切换 · 文字也会变淡");
                 ui.separator();
-                ui.label("老板键：Ctrl+Alt+H（全局）");
+                ui.label(format!(
+                    "老板键：{}（全局）",
+                    self.settings.boss_shortcut.label()
+                ));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.boss_shortcut_draft.ctrl, "Ctrl");
+                    ui.checkbox(&mut self.boss_shortcut_draft.alt, "Alt");
+                    ui.checkbox(&mut self.boss_shortcut_draft.shift, "Shift");
+                    ui.checkbox(&mut self.boss_shortcut_draft.win, "Win");
+                    egui::ComboBox::from_id_salt("boss-shortcut-key")
+                        .selected_text(BossShortcut::key_label(self.boss_shortcut_draft.key))
+                        .width(85.)
+                        .show_ui(ui, |ui| {
+                            for key in BossShortcut::keys() {
+                                ui.selectable_value(
+                                    &mut self.boss_shortcut_draft.key,
+                                    key,
+                                    BossShortcut::key_label(key),
+                                );
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    let can_apply = self
+                        .visibility
+                        .as_ref()
+                        .is_some_and(|v| v.auto_hide_available());
+                    if ui
+                        .add_enabled(can_apply, egui::Button::new("应用快捷键"))
+                        .clicked()
+                    {
+                        self.apply_boss_shortcut();
+                    }
+                    if ui
+                        .add_enabled(can_apply, egui::Button::new("恢复默认快捷键"))
+                        .clicked()
+                    {
+                        self.boss_shortcut_draft = BossShortcut::default();
+                        self.apply_boss_shortcut();
+                    }
+                });
+                ui.small(
+                    "选择修饰键和主键后点击应用；生效后自动保存。功能键可单独使用（F12 除外）。",
+                );
+                if let Some(error) = &self.boss_shortcut_error {
+                    ui.colored_label(Color32::from_rgb(190, 65, 65), error);
+                }
                 ui.small("按一次隐藏整个窗口，再按一次恢复；失去焦点时仍有效。");
                 ui.small("隐藏后任务栏及 Alt+Tab 均不可见，请用同一快捷键恢复。");
                 if let Some(error) = &self.boss_key_error {
@@ -737,6 +807,29 @@ impl Reader {
             });
         self.settings_open = open;
         self.dirty |= before != self.settings;
+    }
+    fn apply_boss_shortcut(&mut self) {
+        let result = self
+            .visibility
+            .as_mut()
+            .ok_or_else(|| "当前环境不支持全局老板键".to_owned())
+            .and_then(|visibility| visibility.set_shortcut(self.boss_shortcut_draft));
+        match result {
+            Ok(()) => {
+                self.settings.boss_shortcut = self.boss_shortcut_draft;
+                self.boss_key_error = None;
+                self.boss_shortcut_error = None;
+                self.dirty = true;
+            }
+            Err(error) => {
+                let status = if self.visibility.as_ref().is_some_and(|v| v.available()) {
+                    format!("原快捷键 {} 仍有效。", self.settings.boss_shortcut.label())
+                } else {
+                    "请更换组合后重试。".to_owned()
+                };
+                self.boss_shortcut_error = Some(format!("{error}。{status}"));
+            }
+        }
     }
     fn choose_file(&mut self) {
         let directory = Path::new(&self.settings.last_book)
@@ -1510,6 +1603,8 @@ mod tests {
             hwnd: None,
             visibility: None,
             boss_key_error: None,
+            boss_shortcut_draft: BossShortcut::default(),
+            boss_shortcut_error: None,
             opacity_available: false,
             applied_opacity: None,
             last_low_opacity: 80,

@@ -1,5 +1,6 @@
 //! 老板键和鼠标自动隐藏均由 Win32 消息循环驱动，隐藏后无需渲染帧。
 use super::visibility_state::{Reason, State};
+use crate::hotkey::{replace_registration, BossShortcut};
 use eframe::egui::{Context, ViewportCommand};
 use std::{
     cell::{Cell, RefCell},
@@ -45,12 +46,9 @@ unsafe extern "system" {
     fn RemoveWindowSubclass(hwnd: Hwnd, proc: SubclassProc, id: usize) -> i32;
     fn DefSubclassProc(hwnd: Hwnd, message: u32, wparam: usize, lparam: isize) -> isize;
 }
-const HOTKEY_ID: i32 = 0x4550;
 const SUBCLASS_ID: usize = 0x45505542;
 const WM_HOTKEY: u32 = 0x0312;
 const WM_NCDESTROY: u32 = 0x0082;
-const MODIFIERS: u32 = 0x0001 | 0x0002 | 0x4000; // ALT | CONTROL | NOREPEAT
-const KEY: u32 = b'H' as u32;
 
 const TIMER_ID: usize = 0x4550554D;
 const WM_TIMER: u32 = 0x0113;
@@ -80,6 +78,8 @@ struct Hook {
     ctx: Context,
     state: Cell<State>,
     hotkey_registered: Cell<bool>,
+    hotkey_id: Cell<i32>,
+    shortcut: Cell<BossShortcut>,
     timer: Cell<usize>,
     moving: Cell<bool>,
     mouse_area: Cell<Option<ScreenRect>>,
@@ -124,7 +124,7 @@ impl Hook {
                 Reason::Mouse
             }));
             *self.error.borrow_mut() =
-                Some("无法显示窗口，请将鼠标移回原窗口区域或再次按 Ctrl+Alt+H 恢复".into());
+                Some("无法显示窗口，请将鼠标移回原窗口区域或再次按当前老板键恢复".into());
             return;
         }
         if self.winit_hidden.replace(false) {
@@ -217,7 +217,7 @@ impl Hook {
             self.state.set(State::Disabled);
             self.stop_timer(hwnd);
             unsafe {
-                UnregisterHotKey(hwnd, HOTKEY_ID);
+                UnregisterHotKey(hwnd, self.hotkey_id.get());
             }
             self.hotkey_registered.set(false);
         }
@@ -243,7 +243,7 @@ unsafe extern "system" fn window_proc(
         hook.state.set(State::Destroyed);
         hook.stop_timer(hwnd);
         unsafe {
-            UnregisterHotKey(hwnd, HOTKEY_ID);
+            UnregisterHotKey(hwnd, hook.hotkey_id.get());
             RemoveWindowSubclass(hwnd, window_proc, id);
         }
         let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
@@ -259,7 +259,11 @@ unsafe extern "system" fn window_proc(
         hook.moving.set(true);
     } else if message == WM_EXITSIZEMOVE {
         hook.moving.set(false);
-    } else if message == WM_HOTKEY && wparam == HOTKEY_ID as usize && hook.hotkey_registered.get() {
+    } else if message == WM_HOTKEY
+        && wparam == hook.hotkey_id.get() as usize
+        && hook.hotkey_registered.get()
+        && hook.shortcut.get().matches_message(lparam)
+    {
         let next = hook.state.get().boss_toggle();
         if next == State::Visible {
             hook.restore(hwnd, true);
@@ -285,7 +289,7 @@ pub struct WindowVisibility {
     _thread_affinity: PhantomData<Rc<()>>,
 }
 impl WindowVisibility {
-    pub fn register(hwnd: isize, ctx: &Context) -> Result<Self, String> {
+    pub fn register(hwnd: isize, ctx: &Context, shortcut: BossShortcut) -> Result<Self, String> {
         let hwnd = hwnd as Hwnd;
         if unsafe { IsWindow(hwnd) } == 0 {
             return Err("无效窗口句柄".into());
@@ -297,6 +301,8 @@ impl WindowVisibility {
             ctx: ctx.clone(),
             state: Cell::new(State::Visible),
             hotkey_registered: Cell::new(false),
+            hotkey_id: Cell::new(0),
+            shortcut: Cell::new(shortcut),
             timer: Cell::new(0),
             moving: Cell::new(false),
             mouse_area: Cell::new(None),
@@ -308,28 +314,57 @@ impl WindowVisibility {
         if unsafe { SetWindowSubclass(hwnd, window_proc, SUBCLASS_ID, callback_ref as usize) } == 0
         {
             unsafe {
-                UnregisterHotKey(hwnd, HOTKEY_ID);
                 drop(Rc::from_raw(callback_ref));
             }
             return Err("无法安装窗口显隐消息回调".into());
         }
         // 老板键占用只禁用热键，鼠标显隐仍可独立使用。
-        let hotkey_error = if unsafe { RegisterHotKey(hwnd, HOTKEY_ID, MODIFIERS, KEY) } == 0 {
-            Some(format!(
-                "快捷键可能被其他程序或另一阅读器实例占用：{}",
-                std::io::Error::last_os_error()
-            ))
-        } else {
-            hook.hotkey_registered.set(true);
-            None
-        };
-        Ok(Self {
+        let mut visibility = Self {
             hwnd,
-            hotkey_error,
+            hotkey_error: None,
             hook,
             restore_on_drop: true,
             _thread_affinity: PhantomData,
-        })
+        };
+        visibility.hotkey_error = visibility.set_shortcut(shortcut).err();
+        Ok(visibility)
+    }
+    pub fn set_shortcut(&mut self, shortcut: BossShortcut) -> Result<(), String> {
+        shortcut.validate()?;
+        if !self.auto_hide_available() || unsafe { IsWindow(self.hwnd) } == 0 {
+            return Err("窗口句柄不可用，无法注册老板键".into());
+        }
+        if shortcut == self.hook.shortcut.get() && self.available() {
+            return Ok(());
+        }
+        let active = self
+            .hook
+            .hotkey_registered
+            .get()
+            .then(|| self.hook.hotkey_id.get());
+        let next = replace_registration(
+            active,
+            |id| {
+                if unsafe { RegisterHotKey(self.hwnd, id, shortcut.modifiers(), shortcut.key) } == 0
+                {
+                    Err(format!(
+                        "{} 注册失败，可能被其他程序占用或由系统保留：{}",
+                        shortcut.label(),
+                        std::io::Error::last_os_error()
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |id| unsafe {
+                UnregisterHotKey(self.hwnd, id);
+            },
+        )?;
+        self.hook.hotkey_id.set(next);
+        self.hook.hotkey_registered.set(true);
+        self.hook.shortcut.set(shortcut);
+        self.hotkey_error = None;
+        Ok(())
     }
     pub fn hide_pending(&self) -> bool {
         matches!(self.hook.state.get(), State::HidePending(_))
@@ -449,7 +484,7 @@ impl Drop for WindowVisibility {
             self.hook.state.set(State::Disabled);
             self.hook.stop_timer(self.hwnd);
             unsafe {
-                UnregisterHotKey(self.hwnd, HOTKEY_ID);
+                UnregisterHotKey(self.hwnd, self.hook.hotkey_id.get());
                 if RemoveWindowSubclass(self.hwnd, window_proc, SUBCLASS_ID) != 0 {
                     drop(Rc::from_raw(Rc::as_ptr(&self.hook)));
                 }

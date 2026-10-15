@@ -21,6 +21,7 @@ pub struct Settings {
     #[serde(default = "default_window_opacity")]
     pub window_opacity: u8,
     pub auto_hide_on_mouse_leave: bool,
+    pub boss_shortcut: crate::hotkey::BossShortcut,
     pub last_book: String,
 }
 fn default_window_opacity() -> u8 {
@@ -59,6 +60,7 @@ impl Default for Settings {
             window_pos: None,
             window_opacity: default_window_opacity(),
             auto_hide_on_mouse_leave: false,
+            boss_shortcut: Default::default(),
             last_book: String::new(),
         }
     }
@@ -89,6 +91,9 @@ impl Settings {
         bounded(&mut self.window_size[1], 350., 8000., 800.);
         self.weight = self.weight.min(2);
         self.window_opacity = self.window_opacity.clamp(20, 100);
+        if self.boss_shortcut.validate().is_err() {
+            self.boss_shortcut = Default::default();
+        }
         bounded(&mut self.toc_width, 150., 600., 235.);
     }
 }
@@ -152,5 +157,25 @@ mod tests {
                 .unwrap()
                 .auto_hide_on_mouse_leave
         );
+    }
+
+    #[test]
+    fn boss_shortcut_migrates_round_trips_and_recovers_invalid_config() {
+        let mut settings: Settings = serde_json::from_str(r#"{"size":24}"#).unwrap();
+        assert_eq!(settings.boss_shortcut, Default::default());
+        settings.boss_shortcut.key = b'J' as u32;
+        settings.boss_shortcut.shift = true;
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Settings>(&saved)
+                .unwrap()
+                .boss_shortcut,
+            settings.boss_shortcut
+        );
+        settings.sanitize();
+        assert_eq!(settings.boss_shortcut.label(), "Ctrl+Alt+Shift+J");
+        settings.boss_shortcut.key = 0xFFFF;
+        settings.sanitize();
+        assert_eq!(settings.boss_shortcut, Default::default());
     }
 }
