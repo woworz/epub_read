@@ -15,6 +15,13 @@ pub enum State {
 }
 
 impl State {
+    pub fn needs_mouse_timer(self, enabled: bool) -> bool {
+        enabled
+            && matches!(
+                self,
+                Self::Visible | Self::HidePending(Reason::Mouse) | Self::Hidden(Reason::Mouse)
+            )
+    }
     pub fn boss_toggle(self) -> Self {
         match self {
             Self::Visible | Self::HidePending(Reason::Mouse) => Self::HidePending(Reason::BossKey),
@@ -37,6 +44,30 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_timer_tracks_preference_and_visibility_reason() {
+        for state in [
+            State::Visible,
+            State::HidePending(Reason::Mouse),
+            State::Hidden(Reason::Mouse),
+        ] {
+            assert!(state.needs_mouse_timer(true));
+            assert!(!state.needs_mouse_timer(false));
+        }
+        for state in [
+            State::HidePending(Reason::BossKey),
+            State::Hidden(Reason::BossKey),
+            State::Disabled,
+            State::Destroyed,
+        ] {
+            assert!(!state.needs_mouse_timer(true));
+            assert!(!state.needs_mouse_timer(false));
+        }
+        let boss = State::Hidden(Reason::Mouse).boss_toggle();
+        assert!(!boss.needs_mouse_timer(true));
+        assert!(boss.boss_toggle().needs_mouse_timer(true));
+    }
 
     #[test]
     fn mouse_leaves_and_returns_to_hidden_area() {

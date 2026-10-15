@@ -2,6 +2,8 @@
 /.tools/
 /data/
 **/data/
+!/vendor/eframe/data/
+!/vendor/eframe/data/**
 /dist/data/
 *.tmp
 *.exe

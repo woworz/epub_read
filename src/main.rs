@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod diagnostics;
 mod epub;
 mod fonts;
 mod hotkey;
@@ -10,7 +11,13 @@ mod settings;
 mod storage;
 mod ui;
 
+// Exercise the exact vendored scheduling helper through the normal offline test suite.
+#[cfg(test)]
+#[path = "../vendor/eframe/src/native/repaint_schedule.rs"]
+mod repaint_schedule_tests;
+
 fn main() {
+    diagnostics::init();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args
         .first()

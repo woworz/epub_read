@@ -29,12 +29,12 @@ for p in sorted(meta["packages"], key=lambda p:p["name"]):
             notices.append(f"\n--- {f.name} ---\n{f.read_text(encoding='utf-8', errors='replace')}\n")
 notice = root / "THIRD_PARTY_NOTICES.txt"
 notice.write_text("".join(notices), encoding="utf-8")
-documents = ["README.md", "DEVELOPMENT_REPORT.md", "THIRD_PARTY_NOTICES.txt"]
+documents = ["README.md", "DEVELOPMENT_REPORT.md", "HIDDEN_CPU_REPORT.md", "THIRD_PARTY_NOTICES.txt"]
 with zipfile.ZipFile(root / "epub-reader-portable.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     for name in ["epub-reader.exe", *documents]:
         z.write(root / name, name)
 source = [root / name for name in ["Cargo.toml", "Cargo.lock", "build.rs", "build.bat", ".gitignore", ".cargo/config.toml", *documents]]
-for directory in ["src", "assets", "tools"]:
+for directory in ["src", "assets", "tools", "vendor"]:
     source.extend(p for p in (root / directory).rglob("*") if p.is_file() and "__pycache__" not in p.parts)
 source.extend(p for p in (root / "fixtures").iterdir() if p.is_file())
 with zipfile.ZipFile(root / "epub-reader-source.zip", "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:

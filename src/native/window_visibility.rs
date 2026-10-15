@@ -81,6 +81,7 @@ struct Hook {
     hotkey_id: Cell<i32>,
     shortcut: Cell<BossShortcut>,
     timer: Cell<usize>,
+    auto_hide_enabled: Cell<bool>,
     moving: Cell<bool>,
     mouse_area: Cell<Option<ScreenRect>>,
     winit_hidden: Cell<bool>,
@@ -137,6 +138,9 @@ impl Hook {
             }
         }
         self.restored.set(true);
+        if let Err(error) = self.sync_timer(hwnd) {
+            *self.error.borrow_mut() = Some(error);
+        }
         self.ctx.request_repaint();
         // Windows 可能拒绝切换前台；不绕过系统限制。
         if activate {
@@ -148,10 +152,31 @@ impl Hook {
     fn stop_timer(&self, hwnd: Hwnd) {
         let timer = self.timer.replace(0);
         if timer != 0 {
+            log::trace!("mouse timer stopped; state={:?}", self.state.get());
             unsafe {
                 KillTimer(hwnd, timer);
             }
         }
+    }
+    fn sync_timer(&self, hwnd: Hwnd) -> Result<(), String> {
+        if !self
+            .state
+            .get()
+            .needs_mouse_timer(self.auto_hide_enabled.get())
+        {
+            self.stop_timer(hwnd);
+        } else if self.timer.get() == 0 {
+            let timer = unsafe { SetTimer(hwnd, TIMER_ID, 120, 0) };
+            if timer == 0 {
+                return Err(format!(
+                    "无法启动鼠标检测：{}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            self.timer.set(timer);
+            log::trace!("mouse timer started; state={:?}", self.state.get());
+        }
+        Ok(())
     }
     fn mouse_tick(&self, hwnd: Hwnd) {
         if self.timer.get() == 0
@@ -269,6 +294,9 @@ unsafe extern "system" fn window_proc(
             hook.restore(hwnd, true);
         } else {
             hook.state.set(next);
+            if let Err(error) = hook.sync_timer(hwnd) {
+                *hook.error.borrow_mut() = Some(error);
+            }
             if next == State::Hidden(Reason::BossKey) {
                 hook.winit_hidden.set(true);
                 hook.ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -304,6 +332,7 @@ impl WindowVisibility {
             hotkey_id: Cell::new(0),
             shortcut: Cell::new(shortcut),
             timer: Cell::new(0),
+            auto_hide_enabled: Cell::new(false),
             moving: Cell::new(false),
             mouse_area: Cell::new(None),
             winit_hidden: Cell::new(false),
@@ -386,20 +415,12 @@ impl WindowVisibility {
         !matches!(self.hook.state.get(), State::Disabled | State::Destroyed)
     }
     pub fn set_auto_hide(&self, enabled: bool) -> Result<(), String> {
+        self.hook.auto_hide_enabled.set(enabled);
         if enabled {
             if !self.auto_hide_available() {
                 return Err("窗口自动隐藏不可用".into());
             }
-            if self.hook.timer.get() == 0 {
-                let timer = unsafe { SetTimer(self.hwnd, TIMER_ID, 120, 0) };
-                if timer == 0 {
-                    return Err(format!(
-                        "无法启动鼠标检测：{}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
-                self.hook.timer.set(timer);
-            }
+            self.hook.sync_timer(self.hwnd)?;
         } else {
             self.hook.stop_timer(self.hwnd);
             if matches!(
@@ -445,6 +466,9 @@ impl WindowVisibility {
             }
         }
         self.hook.state.set(State::Hidden(reason));
+        if let Err(error) = self.hook.sync_timer(self.hwnd) {
+            *self.hook.error.borrow_mut() = Some(error);
+        }
         unsafe {
             ShowWindow(self.hwnd, 0);
         }
@@ -497,4 +521,92 @@ impl Drop for WindowVisibility {
 pub fn window_geometry_available(hwnd: isize) -> bool {
     let hwnd = hwnd as Hwnd;
     unsafe { IsWindow(hwnd) != 0 && IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CreateWindowExW(
+            ex: u32,
+            class: *const u16,
+            title: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            parent: Hwnd,
+            menu: Hwnd,
+            instance: Hwnd,
+            param: Hwnd,
+        ) -> Hwnd;
+        fn DestroyWindow(hwnd: Hwnd) -> i32;
+    }
+    struct TestWindow(Hwnd);
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            unsafe {
+                DestroyWindow(self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn native_mouse_timer_stops_for_boss_and_resumes_after_restore() {
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let window = TestWindow(unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0x80000000,
+                -3000,
+                -3000,
+                100,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        });
+        assert!(!window.0.is_null());
+        let hook = Hook {
+            ctx: Context::default(),
+            state: Cell::new(State::Hidden(Reason::Mouse)),
+            hotkey_registered: Cell::new(false),
+            hotkey_id: Cell::new(0),
+            shortcut: Cell::new(BossShortcut::default()),
+            timer: Cell::new(0),
+            auto_hide_enabled: Cell::new(true),
+            moving: Cell::new(false),
+            mouse_area: Cell::new(None),
+            winit_hidden: Cell::new(false),
+            restored: Cell::new(false),
+            error: RefCell::new(None),
+        };
+        hook.sync_timer(window.0).unwrap();
+        assert_ne!(
+            hook.timer.get(),
+            0,
+            "mouse hiding must retain its recovery timer"
+        );
+        hook.state.set(hook.state.get().boss_toggle());
+        hook.sync_timer(window.0).unwrap();
+        assert_eq!(hook.timer.get(), 0);
+        hook.mouse_tick(window.0); // A queued tick after KillTimer cannot restore the window.
+        assert_eq!(hook.state.get(), State::Hidden(Reason::BossKey));
+        hook.restore(window.0, false);
+        assert_eq!(hook.state.get(), State::Visible);
+        assert_ne!(hook.timer.get(), 0);
+        hook.auto_hide_enabled.set(false);
+        hook.sync_timer(window.0).unwrap();
+        assert_eq!(hook.timer.get(), 0);
+        hook.state.set(State::Hidden(Reason::BossKey));
+        hook.restore(window.0, false);
+        assert_eq!(hook.timer.get(), 0, "disabled preference survives restore");
+        assert!(hook.error.borrow().is_none());
+    }
 }

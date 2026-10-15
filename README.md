@@ -89,7 +89,7 @@ epub-reader.exe --selftest-store
 
 Release 是 GUI 子系统。控制台直接调用时 shell 可能不等待；在 CMD 可用 `start /wait "" epub-reader.exe --selftest-store`。重定向输出使用 UTF-8；Python subprocess 可可靠读取输出与退出码。
 
-`fixtures` 提供 EPUB2 / EPUB3 自包含样书和 `entities.epub`（实体、内部 DTD、BOM、UTF-16LE/BE、损坏 UTF-8）。`--selftest fixtures/entities.epub` 额外校验正文期望字符；普通图书输出保持原样。`tools/make_fixtures.py`、`tools/check_selftest.py` 和 `tools/smoke.py` 只用于开发，不是运行依赖。
+`fixtures` 提供 EPUB2 / EPUB3 自包含样书和 `entities.epub`（实体、内部 DTD、BOM、UTF-16LE/BE、损坏 UTF-8）。`--selftest fixtures/entities.epub` 额外校验正文期望字符；普通图书输出保持原样。测试及样书生成脚本已移除，保留 Rust 回归测试与验证结果。
 
 ## 范围与限制
 

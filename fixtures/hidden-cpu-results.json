@@ -1,0 +1,193 @@
+{
+  "date": "2026-10-15",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "source_base": "cc06b3a7e8fea0b4b0c253c6b4b40817dfece02c",
+  "baseline_auto_off": [
+    {
+      "auto_hide": false,
+      "state": "visible",
+      "elapsed_s": 30.000499599999785,
+      "cpu_s": 0.03125,
+      "single_core_percent": 0.10416493197333362
+    },
+    {
+      "auto_hide": false,
+      "state": "boss_hidden",
+      "elapsed_s": 30.00033110000004,
+      "cpu_s": 29.03125,
+      "single_core_percent": 96.76976531768999
+    }
+  ],
+  "baseline_auto_on": {
+    "label": "baseline-auto-on",
+    "exe_sha256": "3af4714704f45f560e886c2d7b9c7b5008ec366160051dfa5894fedc09867b4a",
+    "logical_processors": 12,
+    "results": [
+      {
+        "auto_hide": true,
+        "state": "mouse_hidden",
+        "skipped": "GetCursorPos unavailable on this desktop"
+      },
+      {
+        "auto_hide": true,
+        "state": "boss_hidden",
+        "elapsed_s": 30.000329099999817,
+        "cpu_s": 29.90625,
+        "single_core_percent": 99.68640644012196,
+        "trace_bytes_during_sample": null
+      },
+      {
+        "auto_hide": true,
+        "restore_ms": [
+          5.584500000168191,
+          5.140499999924941,
+          5.177700000331242,
+          5.17039999976987,
+          5.395899999712128,
+          5.4079000001365785,
+          5.343599999832804,
+          5.177699999876495,
+          5.556999999953405,
+          5.216099999870494,
+          5.596800000148505,
+          5.189499999687541,
+          5.421899999873858,
+          5.283099999815022,
+          5.358500000056665,
+          5.241100000148435,
+          5.303299999923183,
+          5.118000000038592,
+          5.827299999964453,
+          5.55690000010145
+        ]
+      },
+      {
+        "auto_hide": true,
+        "close_hidden": "timed_out"
+      }
+    ]
+  },
+  "patched": {
+    "label": "verified",
+    "exe_sha256": "51f716818626aa5d4edba49ba87cfea783220a99ca4c9a2c65ecc4c5bc53e1b1",
+    "logical_processors": 12,
+    "results": [
+      {
+        "auto_hide": false,
+        "state": "visible",
+        "elapsed_s": 30.000195099999928,
+        "cpu_s": 0.0,
+        "single_core_percent": 0.0,
+        "trace_bytes_during_sample": 0
+      },
+      {
+        "auto_hide": false,
+        "state": "boss_hidden",
+        "elapsed_s": 30.00006809999968,
+        "cpu_s": 0.015625,
+        "single_core_percent": 0.0520832151044356,
+        "trace_bytes_during_sample": 0
+      },
+      {
+        "auto_hide": false,
+        "restore_ms": [
+          5.343700000139506,
+          5.391400000007707,
+          5.59930000008535,
+          5.270300000120187,
+          5.373200000121869,
+          5.263600000034785,
+          5.345800000213785,
+          5.690999999842461,
+          5.319400000189489,
+          5.146500000137166,
+          5.320099999607919,
+          5.453299999771843,
+          5.609099999674072,
+          5.374599999868224,
+          5.321499999809021,
+          5.472700000154873,
+          5.490600000030099,
+          5.621599999813043,
+          5.283899999994901,
+          5.388600000060251
+        ]
+      },
+      {
+        "auto_hide": false,
+        "close_hidden": "passed"
+      },
+      {
+        "auto_hide": true,
+        "state": "mouse_hidden",
+        "skipped": "GetCursorPos unavailable on this desktop"
+      },
+      {
+        "auto_hide": true,
+        "state": "boss_hidden",
+        "elapsed_s": 30.000111800000013,
+        "cpu_s": 0.03125,
+        "single_core_percent": 0.10416627847366884,
+        "trace_bytes_during_sample": 0
+      },
+      {
+        "auto_hide": true,
+        "restore_ms": [
+          5.355100000087987,
+          5.1565000003392925,
+          5.5047999999260355,
+          5.23460000022169,
+          5.518599999959406,
+          5.161999999927502,
+          5.267100000310165,
+          5.505899999661779,
+          5.250499999874592,
+          5.251099999895814,
+          5.209799999647657,
+          5.4218000000219035,
+          5.411300000105257,
+          5.627300000014657,
+          5.373800000143092,
+          5.234499999914988,
+          5.425500000001193,
+          5.511599999863392,
+          5.271400000310678,
+          5.428899999969872
+        ]
+      },
+      {
+        "auto_hide": true,
+        "close_hidden": "passed"
+      }
+    ]
+  },
+  "smoke": [
+    {
+      "args": [],
+      "first_window_ms": 54.2,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "D:\\Documents\\ChatGPT\\EPUBread\\fixtures\\sample-epub3.epub"
+      ],
+      "first_window_ms": 43.1,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "settings_saved": true,
+      "book_data_files": 1
+    }
+  ],
+  "unit_tests_passed": 42,
+  "cli_selftests_passed": 6,
+  "limitations": [
+    "GetCursorPos failed in execution desktop; real mouse return not exercised",
+    "Full-screen/driver-specific visual behavior not visually verified",
+    "WM_HOTKEY handler exercised through posted messages, not physical keyboard input"
+  ]
+}

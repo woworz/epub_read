@@ -57,13 +57,16 @@ jobs:
           @'
           Windows 10/11 x64 便携 EPUB 阅读器，下载 epub-reader.exe 后直接运行。
 
-          - 删除段落标记及相关高亮、备注、导出和 Ctrl+D 功能；书籍数据仅保存阅读位置。
-          - 排版设置移至整个阅读区右键菜单，保留 Ctrl+,；沉浸模式和未打开书籍时均可使用。
-          - 老板键、窗口透明度、实体解码和滚动/翻章逻辑保持不变。
+          - 修复老板键隐藏后事件循环持续轮询、CPU 占用过高的问题。
+          - 老板键隐藏期间暂停鼠标检测，恢复后按用户设置重启；隐藏期间支持正常关闭。
+          - 保留自定义老板键、鼠标自动显隐、窗口透明度与阅读位置恢复。
+          - 删除测试及样书生成脚本，保留 Rust 回归测试和性能验证报告。
 
           构建：Rust 1.99.0，x86_64-pc-windows-msvc，release，静态 CRT。
-          已检查 DLL 依赖，未新增或运行测试，未进行 GUI 运行验证。
-          SHA-256 校验值见 SHA256SUMS.txt；使用说明和第三方许可见仓库。
+          本地验证：42 项 Rust 测试、CLI 自检及启动冒烟通过；老板键隐藏后单核 CPU 占用降至约 0.05%–0.10%。
+          执行桌面无法读取鼠标位置，真实鼠标移回恢复、物理热键及全屏视觉表现未人工验证。
+          SHA-256 校验值见 SHA256SUMS.txt；性能数据和验证边界见 HIDDEN_CPU_REPORT.md。
+          第三方许可随附件提供，使用说明见仓库 README。
           '@ | Set-Content release-notes.md -Encoding utf8NoBOM
-          gh release create $env:GITHUB_REF_NAME epub-reader.exe SHA256SUMS.txt --verify-tag --title "EPUB Reader $env:GITHUB_REF_NAME" --notes-file release-notes.md
+          gh release create $env:GITHUB_REF_NAME epub-reader.exe SHA256SUMS.txt THIRD_PARTY_NOTICES.txt HIDDEN_CPU_REPORT.md --verify-tag --title "EPUB Reader $env:GITHUB_REF_NAME" --notes-file release-notes.md
           if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }
