@@ -9,6 +9,7 @@ mod picker;
 mod render;
 mod settings;
 mod storage;
+mod theme;
 mod ui;
 
 // Exercise the exact vendored scheduling helper through the normal offline test suite.

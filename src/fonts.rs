@@ -85,9 +85,40 @@ pub fn install(
     if family.is_empty() {
         return Err("无法读取系统字体".into());
     }
+    // 界面始终优先使用系统 UI 字体；排版选项仅改变正文。
+    let mut ui_family = Vec::new();
+    for file in ["msyh.ttc", "segoeui.ttf", "seguisym.ttf"] {
+        if !defs.font_data.contains_key(file) {
+            if let Ok(bytes) = std::fs::read(path(file)) {
+                defs.font_data
+                    .insert(file.into(), Arc::new(FontData::from_owned(bytes)));
+            }
+        }
+        if defs.font_data.contains_key(file) {
+            ui_family.push(file.to_owned());
+        }
+    }
+    ui_family.extend(
+        family
+            .iter()
+            .filter(|f| !["msyh.ttc", "segoeui.ttf", "seguisym.ttf"].contains(&f.as_str()))
+            .cloned(),
+    );
     defs.families
-        .insert(FontFamily::Proportional, family.clone());
-    defs.families.insert(FontFamily::Monospace, family.clone());
+        .insert(FontFamily::Proportional, ui_family.clone());
+    defs.families.insert(FontFamily::Monospace, ui_family);
+    defs.families
+        .insert(FontFamily::Name("body".into()), family.clone());
+    defs.font_data.insert(
+        "reader-icons".into(),
+        Arc::new(FontData::from_owned(
+            include_bytes!("../assets/reader-icons.ttf").to_vec(),
+        )),
+    );
+    defs.families.insert(
+        FontFamily::Name("icons".into()),
+        vec!["reader-icons".into()],
+    );
     // 加粗段落优先使用真实字重文件。
     let mut bold_family = Vec::new();
     let selected_bold = if selected.files[2] != selected.files[1] {

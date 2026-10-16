@@ -6,6 +6,7 @@ use crate::{
     render::{Images, Layout},
     settings::{toggle_opacity, Settings},
     storage,
+    theme::{self, Icon, Palette},
 };
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Vec2};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -28,6 +29,7 @@ pub struct Reader {
     error: Option<String>,
     info: Option<String>,
     settings_open: bool,
+    toc_overlay_open: bool,
     search: String,
     focus_search: bool,
     fullscreen: bool,
@@ -54,6 +56,8 @@ pub struct Reader {
     body_geometry: Option<(egui::Id, Vec2, Rect)>,
     #[cfg(test)]
     progress_rect: Option<Rect>,
+    #[cfg(test)]
+    empty_open_rect: Option<Rect>,
 }
 
 // 隐藏先于任何存储操作；保存结果只影响待保存状态，不能撤销隐藏。
@@ -149,6 +153,7 @@ impl Reader {
             error,
             info: hwnd.is_none().then(|| "当前环境不支持窗口透明度".into()),
             settings_open: false,
+            toc_overlay_open: false,
             search: String::new(),
             focus_search: false,
             fullscreen: false,
@@ -175,6 +180,8 @@ impl Reader {
             body_geometry: None,
             #[cfg(test)]
             progress_rect: None,
+            #[cfg(test)]
+            empty_open_rect: None,
         };
         reader.apply_window_opacity();
         reader
@@ -381,21 +388,30 @@ impl Reader {
             if ctrl && shift {
                 continue;
             }
+            if key == Key::Escape {
+                self.toc_overlay_open = false;
+                self.settings_open = false;
+                self.focus_search = false;
+                ctx.memory_mut(|m| m.surrender_focus(m.focused().unwrap_or(egui::Id::NULL)));
+                if self.fullscreen {
+                    self.fullscreen = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
+                continue;
+            }
             match (ctrl, key) {
                 (true, Key::O) => {
                     self.choose_file();
                 }
                 (true, Key::G) | (false, Key::F2) => {
-                    self.settings.toc = true;
+                    self.show_toc(ctx);
                     self.focus_search = true;
-                    self.dirty = true;
                 }
                 (true, Key::Comma) => {
                     self.settings_open = !self.settings_open;
                 }
                 (_, Key::F4) => {
-                    self.settings.toc = !self.settings.toc;
-                    self.dirty = true;
+                    self.toggle_toc(ctx);
                 }
                 (_, Key::F11) => {
                     self.fullscreen = !self.fullscreen;
@@ -431,8 +447,9 @@ impl Reader {
                             });
                         }
                         (false, Key::End) => {
-                            self.scroll = self.layout.height;
-                            self.scroll_request = Some(self.scroll);
+                            // Clamp to the new chapter bottom even if an image
+                            // finishes loading and changes layout this frame.
+                            self.scroll_request = Some(f32::MAX);
                             self.jump = None;
                         }
                         (false, Key::PageDown) | (false, Key::Space) if !shift => {
@@ -469,103 +486,377 @@ impl Reader {
         }
         self.scroll = self.scroll.max(0.);
     }
+    fn show_toc(&mut self, ctx: &egui::Context) {
+        self.settings.immersive = false;
+        if ctx.screen_rect().width() < 760. {
+            self.toc_overlay_open = true;
+        } else {
+            self.settings.toc = true;
+        }
+        self.dirty = true;
+    }
+    fn toggle_toc(&mut self, ctx: &egui::Context) {
+        if ctx.screen_rect().width() < 760. {
+            self.toc_overlay_open = !self.toc_overlay_open;
+            if self.toc_overlay_open {
+                self.settings.immersive = false;
+                self.dirty = true;
+            }
+        } else {
+            self.settings.toc = !self.settings.toc;
+            self.settings.immersive = false;
+            self.dirty = true;
+        }
+    }
     fn toolbar(&mut self, ctx: &egui::Context) {
         if self.settings.immersive {
             return;
         }
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.menu_button("文件", |ui| {
-                    if ui.button("打开 EPUB…   Ctrl+O").clicked() {
-                        ui.close_menu();
-                        self.choose_file();
+        let palette = Palette::for_settings(&self.settings);
+        egui::TopBottomPanel::top("toolbar")
+            .frame(theme::panel_frame(palette, egui::Margin::symmetric(24, 14)))
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 34.),
+                    egui::Sense::hover(),
+                );
+                let compact = rect.width() < 712.;
+                let left = Rect::from_min_size(rect.min, egui::vec2(270., rect.height()));
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(left)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                        ui.menu_button(
+                            Icon::BookOpen.label(if compact {
+                                "阅读器"
+                            } else {
+                                "便携阅读器"
+                            }),
+                            |ui| {
+                                if ui.button("打开 EPUB…   Ctrl+O").clicked() {
+                                    ui.close_menu();
+                                    self.choose_file();
+                                }
+                                ui.separator();
+                                if ui.button("退出").clicked() {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                            },
+                        );
+                        ui.separator();
+                        if theme::action(ui, Icon::FolderOpen, "打开", false)
+                            .on_hover_text("打开 EPUB · Ctrl+O；也可以拖入文件")
+                            .clicked()
+                        {
+                            self.choose_file();
+                        }
+                    },
+                );
+                let right_width = if compact { 164. } else { 260. };
+                let right = Rect::from_min_max(
+                    egui::pos2(rect.right() - right_width, rect.top()),
+                    rect.max,
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(right)
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                    |ui| {
+                        if compact {
+                            ui.menu_button("更多", |ui| {
+                                if ui.button("阅读排版   Ctrl+,").clicked() {
+                                    self.settings_open = !self.settings_open;
+                                    ui.close_menu();
+                                }
+                                if ui.button("沉浸阅读   F10").clicked() {
+                                    self.settings.immersive = true;
+                                    self.dirty = true;
+                                    ui.close_menu();
+                                }
+                            });
+                        } else {
+                            if theme::action(ui, Icon::Moon, "沉浸", false)
+                                .on_hover_text("沉浸阅读 · F10")
+                                .clicked()
+                            {
+                                self.settings.immersive = true;
+                                self.dirty = true;
+                            }
+                            if theme::action(ui, Icon::TextAa, "排版", self.settings_open)
+                                .on_hover_text("阅读排版 · Ctrl+,")
+                                .clicked()
+                            {
+                                self.settings_open = !self.settings_open;
+                            }
+                        }
+                        let selected = if compact {
+                            self.toc_overlay_open
+                        } else {
+                            self.settings.toc
+                        };
+                        if theme::action(ui, Icon::List, "目录", selected)
+                            .on_hover_text("章节目录 · F4；搜索章节 · Ctrl+G / F2")
+                            .clicked()
+                        {
+                            self.toggle_toc(ctx);
+                        }
+                    },
+                );
+                if rect.width() > 940. {
+                    if let Some(book) = &self.book {
+                        let title = if book.author.is_empty() {
+                            book.title.clone()
+                        } else {
+                            format!("{} · {}", book.title, book.author)
+                        };
+                        let middle = Rect::from_center_size(
+                            rect.center(),
+                            egui::vec2(rect.width() - 580., rect.height()),
+                        );
+                        ui.scope_builder(
+                            egui::UiBuilder::new().max_rect(middle).layout(
+                                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                            ),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(RichText::new(&title).color(palette.muted))
+                                        .truncate(),
+                                )
+                                .on_hover_text(&title);
+                            },
+                        );
                     }
-                    if ui.button("退出").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                self.dirty |= ui.toggle_value(&mut self.settings.toc, "目录 F4").changed();
-                if ui
-                    .selectable_label(self.settings_open, "排版设置")
-                    .on_hover_text("Ctrl+,")
-                    .clicked()
-                {
-                    self.settings_open = !self.settings_open;
                 }
-                if ui.button("沉浸 F10").clicked() {
-                    self.settings.immersive = true;
-                    self.dirty = true;
-                }
-                ui.separator();
-                if let Some(book) = &self.book {
-                    ui.label(RichText::new(&book.title).strong());
-                }
+                ui.painter().hline(
+                    rect.left() - 24. ..=rect.right() + 24.,
+                    rect.bottom() + 13.,
+                    egui::Stroke::new(1.0_f32, palette.line),
+                );
             });
-        });
     }
     fn footer(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("progress").show(ctx, |ui| {
-            let mut target: Option<(usize, Option<f32>)> = None;
-            ui.horizontal(|ui| {
-                if self.settings.immersive && ui.small_button("工具栏 F10").clicked() {
-                    self.settings.immersive = false;
-                    self.dirty = true;
-                }
+        let palette = Palette::for_settings(&self.settings);
+        egui::TopBottomPanel::bottom("progress")
+            .frame(theme::panel_frame(palette, egui::Margin::symmetric(24, 8)))
+            .show(ctx, |ui| {
+                let mut target: Option<(usize, Option<f32>)> = None;
                 if let Some(book) = &self.book {
-                    if ui.small_button("上一章").clicked() {
-                        target = Some((self.data.location.chapter.saturating_sub(1), None));
-                    }
-                    if ui.small_button("下一章").clicked() {
-                        target = Some((self.data.location.chapter + 1, None));
-                    }
+                    let count = book.chapters.len();
+                    let chapter = self.data.location.chapter;
                     let local = (self.data.location.paragraph as f32 + self.data.location.offset)
                         / self.paragraphs.len().max(1) as f32;
-                    let mut percent = (self.data.location.chapter as f32 + local)
-                        / book.chapters.len() as f32
-                        * 100.;
-                    let r = ui.add(
-                        egui::Slider::new(&mut percent, 0.0..=100.0)
-                            // Always 会在无输入时也舍入数值并报告 changed，造成每帧跳回。
-                            .clamping(egui::SliderClamping::Edits)
-                            .suffix("%")
-                            .fixed_decimals(1)
-                            .show_value(true),
+                    let mut percent = (chapter as f32 + local) / count as f32 * 100.;
+                    // The full-width track owns its row; labels never change drag geometry.
+                    ui.scope(|ui| {
+                        ui.spacing_mut().slider_width = ui.available_width();
+                        ui.spacing_mut().interact_size.y = 18.;
+                        let v = ui.visuals_mut();
+                        v.slider_trailing_fill = true;
+                        v.selection.bg_fill = palette.accent;
+                        v.widgets.inactive.bg_fill = palette.line;
+                        for w in [
+                            &mut v.widgets.inactive,
+                            &mut v.widgets.hovered,
+                            &mut v.widgets.active,
+                        ] {
+                            w.bg_fill = palette.line;
+                            w.fg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
+                            w.bg_stroke = egui::Stroke::NONE;
+                        }
+                        let r = ui.add(
+                            egui::Slider::new(&mut percent, 0.0..=100.0)
+                                .clamping(egui::SliderClamping::Edits)
+                                .show_value(false),
+                        );
+                        let radius = r.rect.height() / 2.5;
+                        let x = r.rect.left()
+                            + radius
+                            + percent.clamp(0., 100.) / 100. * (r.rect.width() - 2. * radius);
+                        ui.painter().circle_filled(
+                            egui::pos2(x, r.rect.center().y),
+                            radius,
+                            palette.accent,
+                        );
+                        #[cfg(test)]
+                        {
+                            self.progress_rect = Some(r.rect);
+                        }
+                        if r.changed() {
+                            let x = percent / 100. * count as f32;
+                            target = Some((
+                                (x.floor() as usize).min(count - 1),
+                                Some(if percent >= 100. { 1. } else { x.fract() }),
+                            ));
+                        }
+                    });
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 32.),
+                        egui::Sense::hover(),
                     );
-                    #[cfg(test)]
-                    {
-                        self.progress_rect = Some(r.rect);
-                    }
-                    if r.changed() {
-                        let x = percent / 100. * book.chapters.len() as f32;
-                        let c = (x.floor() as usize).min(book.chapters.len() - 1);
-                        let fraction = if percent >= 100. { 1. } else { x.fract() };
-                        target = Some((c, Some(fraction)));
-                    }
-                    // 章节名长度变化不能移动正在拖动的进度滑轨。
-                    ui.label(&book.chapters[self.data.location.chapter].title);
+                    let middle = Rect::from_center_size(rect.center(), egui::vec2(190., 32.));
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(middle)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            if ui
+                                .add_enabled(
+                                    chapter > 0,
+                                    egui::Button::new(Icon::CaretLeft.label("上一章")).frame(false),
+                                )
+                                .on_hover_text("Ctrl+←")
+                                .clicked()
+                            {
+                                target = Some((chapter.saturating_sub(1), None));
+                            }
+                            if ui
+                                .add_enabled(
+                                    chapter + 1 < count,
+                                    egui::Button::new(Icon::CaretRight.label("下一章"))
+                                        .frame(false),
+                                )
+                                .on_hover_text("Ctrl+→")
+                                .clicked()
+                            {
+                                target = Some((chapter + 1, None));
+                            }
+                        },
+                    );
+                    let left =
+                        Rect::from_min_max(rect.min, egui::pos2(middle.left() - 8., rect.bottom()));
+                    let title = &book.chapters[chapter].title;
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(left)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            if self.settings.immersive {
+                                if ui
+                                    .button("退出沉浸")
+                                    .on_hover_text("恢复工具栏 · F10")
+                                    .clicked()
+                                {
+                                    self.settings.immersive = false;
+                                    self.dirty = true;
+                                }
+                            } else {
+                                let label = if rect.width() < 650. {
+                                    title.clone()
+                                } else {
+                                    format!("当前章节  {title}")
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(label).color(palette.muted).size(13.),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(title);
+                            }
+                        },
+                    );
+                    let right =
+                        Rect::from_min_max(egui::pos2(middle.right() + 8., rect.top()), rect.max);
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(right)
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                        |ui| {
+                            ui.label(
+                                RichText::new(format!("{percent:.1}% · 全书"))
+                                    .color(palette.muted)
+                                    .size(13.),
+                            )
+                            .on_hover_text("按章节与章内位置估算，并非原书页码");
+                        },
+                    );
                 } else {
-                    ui.label("打开 EPUB，或把文件拖入窗口 · Ctrl+O");
+                    ui.horizontal(|ui| {
+                        if self.settings.immersive && ui.button("退出沉浸").clicked() {
+                            self.settings.immersive = false;
+                            self.dirty = true;
+                        }
+                        ui.label(
+                            RichText::new("离线阅读 · 拖入 EPUB 或按 Ctrl+O 打开")
+                                .color(palette.muted)
+                                .size(13.),
+                        );
+                    });
+                }
+                if let Some((c, f)) = target {
+                    self.go(c, 0, 0.);
+                    if let Some(f) = f {
+                        let p = f * self.paragraphs.len() as f32;
+                        self.go(c, p.floor() as usize, p.fract());
+                        if f >= 1. {
+                            self.scroll = self.layout.height;
+                            self.jump = Some(Location {
+                                chapter: c,
+                                paragraph: self.paragraphs.len().saturating_sub(1),
+                                offset: 1.,
+                            });
+                        }
+                    }
                 }
             });
-            if let Some((c, f)) = target {
-                self.go(c, 0, 0.);
-                if let Some(f) = f {
-                    let p = f * self.paragraphs.len() as f32;
-                    self.go(c, p.floor() as usize, p.fract());
-                    if f >= 1. {
-                        self.scroll = self.layout.height;
-                        self.jump = Some(Location {
-                            chapter: c,
-                            paragraph: self.paragraphs.len().saturating_sub(1),
-                            offset: 1.,
-                        });
-                    }
-                }
+    }
+    fn toc_contents(&mut self, ui: &mut egui::Ui, toc: &[Toc], dest: &mut Option<(usize, String)>) {
+        let palette = Palette::for_settings(&self.settings);
+        if let Some(book) = &self.book {
+            ui.add(egui::Label::new(RichText::new(&book.title).size(22.).strong()).wrap());
+            if !book.author.is_empty() {
+                ui.label(RichText::new(&book.author).color(palette.muted));
             }
-        });
+            ui.add_space(16.);
+        }
+        ui.label(RichText::new("目录").size(17.).strong());
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .desired_width(f32::INFINITY)
+                .hint_text("搜索章节"),
+        );
+        response.clone().on_hover_text("搜索章节 · Ctrl+G / F2");
+        if self.focus_search {
+            response.request_focus();
+            self.focus_search = false;
+        }
+        ui.add_space(6.);
+        egui::ScrollArea::vertical()
+            .id_salt("toc-scroll")
+            .max_height(ui.available_height().max(40.))
+            .show(ui, |ui| {
+                let filter = self.search.to_lowercase();
+                self.dirty |= toc_ui(
+                    ui,
+                    toc,
+                    &filter,
+                    self.data.location.chapter,
+                    dest,
+                    &mut self.settings.collapsed_toc,
+                );
+                if toc.is_empty() {
+                    ui.label(RichText::new("打开书籍后显示章节").color(palette.muted));
+                } else if !toc.iter().any(|n| toc_matches(n, &filter)) {
+                    ui.label(RichText::new("没有匹配的章节").color(palette.muted));
+                }
+            });
     }
     fn toc_panel(&mut self, ctx: &egui::Context) {
-        if !self.settings.toc || self.settings.immersive {
+        if self.settings.immersive {
+            return;
+        }
+        let narrow = ctx.screen_rect().width() < 760.;
+        if !narrow {
+            self.toc_overlay_open = false;
+        }
+        if !(if narrow {
+            self.toc_overlay_open
+        } else {
+            self.settings.toc
+        }) {
             return;
         }
         let toc = self
@@ -574,42 +865,42 @@ impl Reader {
             .map(|b| b.toc.clone())
             .unwrap_or_default();
         let mut dest = None;
-        let panel = egui::SidePanel::left("toc")
-            .default_width(self.settings.toc_width)
-            .width_range(150.0..=600.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.heading("章节目录");
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("搜索章节 · Ctrl+G / F2"),
-                );
-                if self.focus_search {
-                    r.request_focus();
-                    self.focus_search = false;
-                }
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("toc-scroll")
-                    .show(ui, |ui| {
-                        self.dirty |= toc_ui(
-                            ui,
-                            &toc,
-                            &self.search.to_lowercase(),
-                            self.data.location.chapter,
-                            &mut dest,
-                            &mut self.settings.collapsed_toc,
-                        );
-                    });
-            });
-        let width = panel.response.rect.width();
-        if (self.settings.toc_width - width).abs() > 0.1 {
-            self.settings.toc_width = width;
-            self.dirty = true;
+        let mut palette = Palette::for_settings(&self.settings);
+        palette.surface = palette.sidebar;
+        if narrow {
+            let mut open = true;
+            egui::Window::new("章节目录")
+                .id(egui::Id::new("compact-toc"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width((ctx.screen_rect().width() - 80.).min(360.))
+                .max_height((ctx.screen_rect().height() - 110.).max(120.))
+                .frame(theme::panel_frame(palette, egui::Margin::same(18)))
+                .show(ctx, |ui| self.toc_contents(ui, &toc, &mut dest));
+            self.toc_overlay_open = open && dest.is_none();
+        } else {
+            let panel = egui::SidePanel::left("toc")
+                .default_width(self.settings.toc_width)
+                .width_range(150.0..=(ctx.screen_rect().width() - 400.).clamp(150., 600.))
+                .resizable(true)
+                .frame(theme::panel_frame(palette, egui::Margin::symmetric(18, 24)))
+                .show(ctx, |ui| self.toc_contents(ui, &toc, &mut dest));
+            let width = panel.response.rect.width();
+            if (self.settings.toc_width - width).abs() > 0.1
+                && ctx.input(|i| i.pointer.primary_down())
+            {
+                self.settings.toc_width = width;
+                self.dirty = true;
+            }
         }
         if let Some((c, a)) = dest {
             self.go_anchor(c, &a);
-            ctx.memory_mut(|m| m.surrender_focus(egui::Id::NULL));
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
         }
     }
     fn settings_panel(&mut self, ctx: &egui::Context) {
@@ -618,19 +909,47 @@ impl Reader {
         }
         let before = self.settings.clone();
         let mut open = true;
-        egui::Window::new("排版设置 · Ctrl+,")
+        let palette = Palette::for_settings(&self.settings);
+        egui::Window::new("阅读排版")
+            .id(egui::Id::new("reader-settings"))
             .open(&mut open)
-            .default_width(400.)
+            .default_pos(egui::pos2((ctx.screen_rect().right() - 440.).max(16.), 80.))
+            .default_width(380.)
+            .default_height((ctx.screen_rect().height() - 260.).clamp(180., 500.))
+            .max_width((ctx.screen_rect().width() - 48.).min(420.))
+            .max_height((ctx.screen_rect().height() - 100.).max(160.))
             .vscroll(true)
             .resizable(false)
+            .collapsible(false)
             .show(ctx, |ui| {
-                egui::Grid::new("settings-grid")
+                ui.label(
+                    RichText::new("改动即时生效，阅读位置自动保留")
+                        .color(palette.muted)
+                        .size(13.),
+                );
+                ui.add_space(8.);
+                ui.horizontal(|ui| {
+                    for (i, name) in ["白天", "纸张", "夜间"].iter().enumerate() {
+                        if ui
+                            .add_sized(
+                                [96., 34.],
+                                egui::Button::new(*name).selected(self.settings.theme == i),
+                            )
+                            .clicked()
+                        {
+                            self.settings.set_theme(i);
+                        }
+                    }
+                });
+                ui.add_space(10.);
+                egui::Grid::new("reading-settings-grid")
                     .num_columns(2)
-                    .spacing([15., 12.])
+                    .spacing([16., 16.])
                     .show(ui, |ui| {
                         ui.label("字体");
                         egui::ComboBox::from_id_salt("font")
                             .selected_text(&self.settings.font)
+                            .width(210.)
                             .show_ui(ui, |ui| {
                                 for f in &self.font_list {
                                     ui.selectable_value(
@@ -644,169 +963,174 @@ impl Reader {
                         ui.label("字号");
                         ui.add(
                             egui::Slider::new(&mut self.settings.size, 12.0..=48.0)
-                                .step_by(1.0)
+                                .clamping(egui::SliderClamping::Edits)
+                                .step_by(1.)
                                 .suffix(" px"),
                         );
-                        ui.end_row();
-                        ui.label("字重");
-                        ui.horizontal(|ui| {
-                            for (i, name) in ["细", "常规", "粗"].iter().enumerate() {
-                                ui.selectable_value(&mut self.settings.weight, i, *name);
-                            }
-                        });
                         ui.end_row();
                         ui.label("行间距");
                         ui.add(
                             egui::Slider::new(&mut self.settings.line_spacing, 1.0..=3.0)
+                                .clamping(egui::SliderClamping::Edits)
                                 .step_by(0.1),
                         );
                         ui.end_row();
-                        ui.label("段间距");
-                        ui.add(
-                            egui::Slider::new(&mut self.settings.paragraph_spacing, 0.0..=60.0)
-                                .suffix(" px"),
-                        );
-                        ui.end_row();
-                        ui.label("左右边距");
-                        ui.add(
-                            egui::Slider::new(&mut self.settings.margin, 0.0..=160.0).suffix(" px"),
-                        );
-                        ui.end_row();
-                        ui.label("正文最大宽度");
+                        ui.label("正文宽度");
                         ui.add(
                             egui::Slider::new(&mut self.settings.max_width, 300.0..=1600.0)
+                                .clamping(egui::SliderClamping::Edits)
                                 .suffix(" px"),
-                        );
-                        ui.end_row();
-                        ui.label("主题");
-                        ui.horizontal(|ui| {
-                            for (i, name) in ["白天", "护眼", "夜间"].iter().enumerate() {
-                                if ui
-                                    .selectable_label(self.settings.theme == i, *name)
-                                    .clicked()
-                                {
-                                    self.settings.set_theme(i);
-                                }
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("背景色");
-                        ui.color_edit_button_srgb(&mut self.settings.background);
-                        ui.end_row();
-                        ui.label("文字色");
-                        ui.color_edit_button_srgb(&mut self.settings.foreground);
-                        ui.end_row();
-                        ui.label("窗口透明度");
-                        ui.add_enabled_ui(self.opacity_available, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::Slider::new(&mut self.settings.window_opacity, 20..=100)
-                                        .clamping(egui::SliderClamping::Edits)
-                                        .step_by(5.0)
-                                        .suffix("%"),
-                                );
-                                if ui.button("100%").clicked() {
-                                    self.settings.window_opacity = 100;
-                                }
-                            });
-                        });
-                        ui.end_row();
-                        ui.label("鼠标自动显隐");
-                        ui.add_enabled(
-                            self.visibility
-                                .as_ref()
-                                .is_some_and(|v| v.auto_hide_available()),
-                            egui::Checkbox::new(
-                                &mut self.settings.auto_hide_on_mouse_leave,
-                                "移出隐藏，移入显示",
-                            ),
                         );
                         ui.end_row();
                     });
-                ui.small("开启后，鼠标离开窗口即隐藏；回到原窗口区域自动显示。开关自动保存。");
-                ui.small(format!(
-                    "老板键主动隐藏后，仍需 {} 恢复。",
-                    self.settings.boss_shortcut.label()
-                ));
-                if !self
-                    .visibility
-                    .as_ref()
-                    .is_some_and(|v| v.auto_hide_available())
-                {
-                    ui.small("当前环境不支持鼠标自动显隐。");
-                }
-                ui.separator();
-                if ui.button("恢复默认排版").clicked() {
-                    let d = Settings::default();
-                    self.settings.font = d.font;
-                    self.settings.size = d.size;
-                    self.settings.weight = d.weight;
-                    self.settings.line_spacing = d.line_spacing;
-                    self.settings.paragraph_spacing = d.paragraph_spacing;
-                    self.settings.margin = d.margin;
-                    self.settings.max_width = d.max_width;
-                    self.settings.set_theme(d.theme);
-                }
-                ui.small("Ctrl+滚轮 / Ctrl+加减号调字号 · F11 全屏 · F10 沉浸");
-                ui.small("Ctrl+Shift+↑ / ↓ 调透明度 · F9 切换 · 文字也会变淡");
-                ui.separator();
-                ui.label(format!(
-                    "老板键：{}（全局）",
-                    self.settings.boss_shortcut.label()
-                ));
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.boss_shortcut_draft.ctrl, "Ctrl");
-                    ui.checkbox(&mut self.boss_shortcut_draft.alt, "Alt");
-                    ui.checkbox(&mut self.boss_shortcut_draft.shift, "Shift");
-                    ui.checkbox(&mut self.boss_shortcut_draft.win, "Win");
-                    egui::ComboBox::from_id_salt("boss-shortcut-key")
-                        .selected_text(BossShortcut::key_label(self.boss_shortcut_draft.key))
-                        .width(85.)
-                        .show_ui(ui, |ui| {
-                            for key in BossShortcut::keys() {
-                                ui.selectable_value(
-                                    &mut self.boss_shortcut_draft.key,
-                                    key,
-                                    BossShortcut::key_label(key),
-                                );
-                            }
+                ui.add_space(6.);
+                egui::CollapsingHeader::new("更多排版").show(ui, |ui| {
+                    egui::Grid::new("extra-reading-settings")
+                        .num_columns(2)
+                        .spacing([16., 14.])
+                        .show(ui, |ui| {
+                            ui.label("字重");
+                            ui.horizontal(|ui| {
+                                for (i, name) in ["细", "常规", "粗"].iter().enumerate() {
+                                    ui.selectable_value(&mut self.settings.weight, i, *name);
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("段间距");
+                            ui.add(
+                                egui::Slider::new(&mut self.settings.paragraph_spacing, 0.0..=60.0)
+                                    .clamping(egui::SliderClamping::Edits)
+                                    .suffix(" px"),
+                            );
+                            ui.end_row();
+                            ui.label("左右边距");
+                            ui.add(
+                                egui::Slider::new(&mut self.settings.margin, 0.0..=160.0)
+                                    .clamping(egui::SliderClamping::Edits)
+                                    .suffix(" px"),
+                            );
+                            ui.end_row();
+                            ui.label("背景色");
+                            ui.color_edit_button_srgb(&mut self.settings.background);
+                            ui.end_row();
+                            ui.label("文字色");
+                            ui.color_edit_button_srgb(&mut self.settings.foreground);
+                            ui.end_row();
                         });
                 });
-                ui.horizontal(|ui| {
-                    let can_apply = self
-                        .visibility
-                        .as_ref()
-                        .is_some_and(|v| v.auto_hide_available());
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("应用快捷键"))
-                        .clicked()
-                    {
-                        self.apply_boss_shortcut();
-                    }
-                    if ui
-                        .add_enabled(can_apply, egui::Button::new("恢复默认快捷键"))
-                        .clicked()
-                    {
-                        self.boss_shortcut_draft = BossShortcut::default();
-                        self.apply_boss_shortcut();
-                    }
-                });
-                ui.small(
-                    "选择修饰键和主键后点击应用；生效后自动保存。功能键可单独使用（F12 除外）。",
+                ui.separator();
+                egui::CollapsingHeader::new("窗口与快捷键").show(ui, |ui| self.window_settings(ui));
+                ui.separator();
+                if ui.button("恢复默认排版").clicked() {
+                    self.settings.restore_typography();
+                }
+                ui.label(
+                    RichText::new("Ctrl+滚轮调字号 · F10 沉浸 · F11 全屏")
+                        .size(13.)
+                        .color(palette.muted),
                 );
-                if let Some(error) = &self.boss_shortcut_error {
-                    ui.colored_label(Color32::from_rgb(190, 65, 65), error);
-                }
-                ui.small("按一次隐藏整个窗口，再按一次恢复；失去焦点时仍有效。");
-                ui.small("隐藏后任务栏及 Alt+Tab 均不可见，请用同一快捷键恢复。");
-                if let Some(error) = &self.boss_key_error {
-                    ui.colored_label(Color32::from_rgb(190, 65, 65), error);
-                } else if self.visibility.as_ref().is_some_and(|key| key.available()) {
-                    ui.small("状态：已注册；松开后再次按下才切换，隐藏状态不会保存。");
-                }
             });
         self.settings_open = open;
         self.dirty |= before != self.settings;
+    }
+    fn window_settings(&mut self, ui: &mut egui::Ui) {
+        egui::Grid::new("window-settings-grid")
+            .num_columns(2)
+            .spacing([15., 12.])
+            .show(ui, |ui| {
+                ui.label("窗口透明度");
+                ui.add_enabled_ui(self.opacity_available, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.settings.window_opacity, 20..=100)
+                                .clamping(egui::SliderClamping::Edits)
+                                .step_by(5.0)
+                                .suffix("%"),
+                        );
+                        if ui.button("100%").clicked() {
+                            self.settings.window_opacity = 100;
+                        }
+                    });
+                });
+                ui.end_row();
+                ui.label("鼠标自动显隐");
+                ui.add_enabled(
+                    self.visibility
+                        .as_ref()
+                        .is_some_and(|v| v.auto_hide_available()),
+                    egui::Checkbox::new(
+                        &mut self.settings.auto_hide_on_mouse_leave,
+                        "移出隐藏，移入显示",
+                    ),
+                );
+                ui.end_row();
+            });
+        ui.small("开启后，鼠标离开窗口即隐藏；回到原窗口区域自动显示。开关自动保存。");
+        ui.small(format!(
+            "老板键主动隐藏后，仍需 {} 恢复。",
+            self.settings.boss_shortcut.label()
+        ));
+        if !self
+            .visibility
+            .as_ref()
+            .is_some_and(|v| v.auto_hide_available())
+        {
+            ui.small("当前环境不支持鼠标自动显隐。");
+        }
+        ui.small("Ctrl+Shift+↑ / ↓ 调透明度 · F9 切换 · 文字也会变淡");
+        ui.separator();
+        ui.label(format!(
+            "老板键：{}（全局）",
+            self.settings.boss_shortcut.label()
+        ));
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.boss_shortcut_draft.ctrl, "Ctrl");
+            ui.checkbox(&mut self.boss_shortcut_draft.alt, "Alt");
+            ui.checkbox(&mut self.boss_shortcut_draft.shift, "Shift");
+            ui.checkbox(&mut self.boss_shortcut_draft.win, "Win");
+            egui::ComboBox::from_id_salt("boss-shortcut-key")
+                .selected_text(BossShortcut::key_label(self.boss_shortcut_draft.key))
+                .width(85.)
+                .show_ui(ui, |ui| {
+                    for key in BossShortcut::keys() {
+                        ui.selectable_value(
+                            &mut self.boss_shortcut_draft.key,
+                            key,
+                            BossShortcut::key_label(key),
+                        );
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            let can_apply = self
+                .visibility
+                .as_ref()
+                .is_some_and(|v| v.auto_hide_available());
+            if ui
+                .add_enabled(can_apply, egui::Button::new("应用快捷键"))
+                .clicked()
+            {
+                self.apply_boss_shortcut();
+            }
+            if ui
+                .add_enabled(can_apply, egui::Button::new("恢复默认快捷键"))
+                .clicked()
+            {
+                self.boss_shortcut_draft = BossShortcut::default();
+                self.apply_boss_shortcut();
+            }
+        });
+        ui.small("选择修饰键和主键后点击应用；生效后自动保存。功能键可单独使用（F12 除外）。");
+        if let Some(error) = &self.boss_shortcut_error {
+            ui.colored_label(Color32::from_rgb(190, 65, 65), error);
+        }
+        ui.small("按一次隐藏整个窗口，再按一次恢复；失去焦点时仍有效。");
+        ui.small("隐藏后任务栏及 Alt+Tab 均不可见，请用同一快捷键恢复。");
+        if let Some(error) = &self.boss_key_error {
+            ui.colored_label(Color32::from_rgb(190, 65, 65), error);
+        } else if self.visibility.as_ref().is_some_and(|key| key.available()) {
+            ui.small("状态：已注册；松开后再次按下才切换，隐藏状态不会保存。");
+        }
     }
     fn apply_boss_shortcut(&mut self) {
         let result = self
@@ -895,14 +1219,37 @@ impl Reader {
             .show(ctx, |ui| {
                 if self.book.is_none() {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.25);
-                        ui.heading("便携 EPUB 阅读器");
-                        ui.label("离线阅读 · 数据随程序迁移");
-                        ui.add_space(20.);
-                        if ui.button("打开 EPUB…").clicked() {
+                        let compact = ui.available_height() < 400.;
+                        ui.spacing_mut().item_spacing.y = 8.;
+                        ui.add_space((ui.available_height() - 250.).max(0.) * 0.35);
+                        let palette = Palette::for_settings(&self.settings);
+                        ui.label(
+                            Icon::BookOpen
+                                .text(if compact { 32. } else { 44. })
+                                .color(palette.accent),
+                        );
+                        ui.add_space(if compact { 0. } else { 12. });
+                        ui.label(RichText::new("留一点时间，读一本书").size(if compact {
+                            20.
+                        } else {
+                            26.
+                        }));
+                        ui.label(RichText::new("离线阅读 · 数据随程序迁移").color(palette.muted));
+                        ui.add_space(if compact { 4. } else { 24. });
+                        let open = ui.add(egui::Button::new(Icon::FolderOpen.label("打开 EPUB")));
+                        #[cfg(test)]
+                        {
+                            self.empty_open_rect = Some(open.rect);
+                        }
+                        if open.clicked() {
                             self.choose_file();
                         }
-                        ui.label("也可以拖入 EPUB 文件");
+                        ui.add_space(6.);
+                        ui.label(
+                            RichText::new("也可以拖入 EPUB 文件 · Ctrl+O")
+                                .color(palette.muted)
+                                .size(13.),
+                        );
                     });
                     return;
                 }
@@ -916,20 +1263,30 @@ impl Reader {
                     width,
                     self.data.location.chapter,
                     &self.images,
+                    &self.book.as_ref().unwrap().title,
+                    &self.book.as_ref().unwrap().chapters[self.data.location.chapter].title,
                 );
-                if rebuilt && self.jump.is_none() {
+                if rebuilt && self.jump.is_none() && self.scroll_request.is_none() {
                     self.jump = Some(self.data.location.clone());
                 }
                 if let Some(location) = self.jump.take() {
                     ctx.request_repaint();
                     if let Some(row) = self.layout.rows.get(location.paragraph) {
-                        self.scroll = row.y + row.height * location.offset;
+                        self.scroll = if location.paragraph == 0 && location.offset == 0. {
+                            0.
+                        } else {
+                            row.y + row.height * location.offset
+                        };
                         self.scroll_request = Some(self.scroll);
                     }
                 }
                 let before_scroll = self.scroll;
                 let body_hovered = ui.rect_contains_pointer(ui.available_rect_before_wrap());
-                let wheel = if body_hovered && self.picker.is_none() && !self.settings_open {
+                let wheel = if body_hovered
+                    && self.picker.is_none()
+                    && !self.settings_open
+                    && !self.toc_overlay_open
+                {
                     ctx.input(|i| {
                         i.events
                             .iter()
@@ -965,6 +1322,32 @@ impl Reader {
                     let total_width = ui.available_width();
                     let (_, rect) = ui.allocate_space(Vec2::new(total_width, self.layout.height));
                     let left = rect.left() + (total_width - width) * 0.5;
+                    if let Some(g) = &self.layout.book_label {
+                        ui.painter().galley(
+                            egui::pos2(left, rect.top() + 40.),
+                            g.clone(),
+                            Color32::WHITE,
+                        );
+                    }
+                    if let Some(g) = &self.layout.fallback_heading {
+                        ui.painter().galley(
+                            egui::pos2(left, rect.top() + self.layout.heading_y),
+                            g.clone(),
+                            Color32::WHITE,
+                        );
+                    }
+                    let color = Color32::from_rgb(
+                        self.settings.foreground[0],
+                        self.settings.foreground[1],
+                        self.settings.foreground[2],
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(left, rect.top() + self.layout.divider_y),
+                            egui::pos2(left + 32., rect.top() + self.layout.divider_y),
+                        ],
+                        egui::Stroke::new(1.0_f32, color.gamma_multiply(0.5)),
+                    );
                     let first = self.layout.paragraph_at(viewport.min.y - 60.);
                     let last = (self.layout.paragraph_at(viewport.max.y + 60.) + 1)
                         .min(self.paragraphs.len());
@@ -1103,6 +1486,11 @@ impl Reader {
         menu.store(ctx, menu_id);
     }
 }
+fn toc_matches(n: &Toc, filter: &str) -> bool {
+    filter.is_empty()
+        || n.title.to_lowercase().contains(filter)
+        || n.children.iter().any(|n| toc_matches(n, filter))
+}
 fn toc_ui(
     ui: &mut egui::Ui,
     nodes: &[Toc],
@@ -1112,50 +1500,78 @@ fn toc_ui(
     collapsed: &mut Vec<String>,
 ) -> bool {
     let mut changed = false;
-    fn matches(n: &Toc, s: &str) -> bool {
-        s.is_empty()
-            || n.title.to_lowercase().contains(s)
-            || n.children.iter().any(|n| matches(n, s))
-    }
     for n in nodes {
-        if !matches(n, filter) {
+        if !toc_matches(n, filter) {
             continue;
         }
+        let id = format!("{}/{}/{}", n.chapter, n.anchor, n.title);
         let selected = n.chapter == current;
-        let label = if selected {
-            RichText::new(&n.title)
-                .color(ui.visuals().selection.stroke.color)
-                .strong()
-        } else {
-            RichText::new(&n.title)
-        };
-        if n.children.is_empty() {
-            if ui.selectable_label(selected, label).clicked() {
-                *dest = Some((n.chapter, n.anchor.clone()));
-            }
-        } else {
-            let id = format!("{}/{}/{}", n.chapter, n.anchor, n.title);
-            let mut open = !collapsed.contains(&id) || !filter.is_empty();
+        let mut open = !collapsed.contains(&id) || !filter.is_empty();
+        ui.push_id(&id, |ui| {
             ui.horizontal(|ui| {
-                if ui.small_button(if open { "▼" } else { "▶" }).clicked() {
-                    open = !open;
-                    changed = true;
-                    if open {
-                        collapsed.retain(|s| s != &id);
+                if !n.children.is_empty() {
+                    let icon = if open {
+                        Icon::CaretDown
                     } else {
-                        collapsed.push(id.clone());
+                        Icon::CaretRight
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(icon.text(16.))
+                                .frame(false)
+                                .min_size(egui::vec2(22., 32.)),
+                        )
+                        .on_hover_text(if open { "折叠章节" } else { "展开章节" })
+                        .clicked()
+                    {
+                        open = !open;
+                        changed = true;
+                        if open {
+                            collapsed.retain(|s| s != &id);
+                        } else {
+                            collapsed.push(id.clone());
+                        }
                     }
                 }
-                if ui.selectable_label(selected, label).clicked() {
+                let text = RichText::new(&n.title).color(if selected {
+                    ui.visuals().selection.stroke.color
+                } else {
+                    ui.visuals().text_color()
+                });
+                let size = egui::vec2(ui.available_width(), 36.);
+                let r = ui
+                    .allocate_ui_with_layout(
+                        size,
+                        egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
+                        |ui| {
+                            ui.add(
+                                egui::Button::new(text)
+                                    .truncate()
+                                    .selected(selected)
+                                    .frame(selected)
+                                    .stroke(egui::Stroke::NONE)
+                                    .min_size(size),
+                            )
+                        },
+                    )
+                    .inner;
+                if selected {
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(r.rect.left_top(), egui::vec2(3., r.rect.height())),
+                        1.,
+                        ui.visuals().selection.stroke.color,
+                    );
+                }
+                if r.clone().on_hover_text(&n.title).clicked() {
                     *dest = Some((n.chapter, n.anchor.clone()));
                 }
             });
-            if open {
-                ui.indent(id, |ui| {
+            if open && !n.children.is_empty() {
+                ui.indent(&id, |ui| {
                     changed |= toc_ui(ui, &n.children, filter, current, dest, collapsed);
                 });
             }
-        }
+        });
     }
     changed
 }
@@ -1184,11 +1600,7 @@ impl eframe::App for Reader {
             self.applied_opacity = None;
             self.opacity_reapply = false;
         }
-        ctx.set_visuals(if self.settings.theme == 2 {
-            egui::Visuals::dark()
-        } else {
-            egui::Visuals::light()
-        });
+        theme::apply(ctx, &self.settings);
         let font_key = format!("{}/{}", self.settings.font, self.settings.weight);
         if self.font_key != font_key {
             match fonts::install(
@@ -1363,6 +1775,164 @@ mod tests {
     impl Drop for SaveDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sized_frame(
+        ctx: &egui::Context,
+        r: &mut Reader,
+        width: f32,
+        height: f32,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, height))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                theme::apply(ctx, &r.settings);
+                r.keyboard(ctx);
+                r.toolbar(ctx);
+                r.footer(ctx);
+                r.toc_panel(ctx);
+                r.reader(ctx);
+                r.settings_panel(ctx);
+            },
+        );
+    }
+    #[test]
+    fn empty_state_open_button_is_visible_and_works_at_minimum_size() {
+        let (ctx, mut r) = reader();
+        r.book = None;
+        sized_frame(&ctx, &mut r, 500., 350., 0., vec![]);
+        sized_frame(&ctx, &mut r, 500., 350., 0.1, vec![]);
+        let rect = r.empty_open_rect.unwrap();
+        assert!(
+            rect.top() >= 62. && rect.bottom() < 300.,
+            "打开按钮必须在工具栏和底栏之间：{rect:?}"
+        );
+        let point = rect.center();
+        sized_frame(
+            &ctx,
+            &mut r,
+            500.,
+            350.,
+            0.2,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        sized_frame(
+            &ctx,
+            &mut r,
+            500.,
+            350.,
+            0.3,
+            vec![egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(r.picker.is_some());
+    }
+    #[test]
+    fn long_body_text_stays_inside_the_configured_column() {
+        let (ctx, mut r) = reader();
+        r.settings.max_width = 300.;
+        r.settings.size = 32.;
+        sized_frame(&ctx, &mut r, 1100., 800., 0., vec![]);
+        for row in &r.layout.rows {
+            if let Some(g) = &row.galley {
+                assert!(
+                    g.size().x <= r.layout.width + 1.,
+                    "正文不能横向溢出：{} > {}",
+                    g.size().x,
+                    r.layout.width
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chapter_header_does_not_duplicate_existing_titles_or_skip_top() {
+        let (ctx, mut r) = reader();
+        r.go(1, 0, 0.);
+        sized_frame(&ctx, &mut r, 1100., 800., 0., vec![]);
+        assert!(r.layout.fallback_heading.is_none());
+        assert_eq!(r.layout.rows.len(), r.paragraphs.len());
+        assert_eq!(r.scroll, 0.);
+        r.paragraphs.remove(0);
+        r.layout.clear();
+        r.go(1, 0, 0.);
+        sized_frame(&ctx, &mut r, 1100., 800., 0.1, vec![]);
+        assert!(r.layout.fallback_heading.is_some());
+        assert_eq!(r.layout.rows.len(), r.paragraphs.len());
+        assert!(r.layout.rows[0].y > r.layout.divider_y);
+        assert_eq!(r.scroll, 0.);
+    }
+
+    #[test]
+    fn compact_toc_does_not_overwrite_saved_sidebar_preference() {
+        let (ctx, mut r) = reader();
+        r.settings.toc = true;
+        r.settings.toc_width = 285.;
+        sized_frame(&ctx, &mut r, 500., 350., 0., vec![]);
+        assert!(r.settings.toc);
+        assert_eq!(r.settings.toc_width, 285.);
+        r.show_toc(&ctx);
+        sized_frame(&ctx, &mut r, 500., 350., 0.1, vec![]);
+        assert!(r.toc_overlay_open);
+        assert!(r.settings.toc);
+        sized_frame(&ctx, &mut r, 500., 350., 0.2, key(Key::Escape, false));
+        assert!(!r.toc_overlay_open);
+        assert!(r.settings.toc);
+        assert_eq!(r.settings.toc_width, 285.);
+        r.show_toc(&ctx);
+        sized_frame(&ctx, &mut r, 1100., 800., 0.3, vec![]);
+        assert!(!r.toc_overlay_open);
+        assert!(r.settings.toc);
+    }
+    #[test]
+    fn sidebar_reflow_preserves_paragraph_and_progress_track_geometry() {
+        let (ctx, mut r, mut time) = long_reader();
+        let location = r.data.location.clone();
+        let track = r.progress_rect.unwrap();
+        r.settings.toc = true;
+        full_frame(&ctx, &mut r, &mut time, vec![]);
+        assert_eq!(r.data.location.paragraph, location.paragraph);
+        assert!((r.data.location.offset - location.offset).abs() < 0.001);
+        assert_eq!(r.progress_rect.unwrap(), track);
+        let c = r.data.location.chapter;
+        r.book.as_mut().unwrap().chapters[c].title = "很长的章节名称".repeat(30);
+        full_frame(&ctx, &mut r, &mut time, vec![]);
+        assert_eq!(r.progress_rect.unwrap(), track);
+        r.settings.toc = false;
+        full_frame(&ctx, &mut r, &mut time, vec![]);
+        assert_eq!(r.data.location.paragraph, location.paragraph);
+    }
+    #[test]
+    fn minimal_layout_settings_and_themes_fit_small_viewports() {
+        for theme in 0..3 {
+            let (ctx, mut r) = reader();
+            r.settings.set_theme(theme);
+            r.settings_open = true;
+            sized_frame(&ctx, &mut r, 500., 350., 0., vec![]);
+            sized_frame(&ctx, &mut r, 500., 350., 0.1, vec![]);
+            let (_, _, body) = r.body_geometry.unwrap();
+            assert!(body.width() > 300. && body.height() > 150.);
+            assert!(r.progress_rect.unwrap().right() <= 500.);
         }
     }
 
@@ -1597,6 +2167,7 @@ mod tests {
             error: None,
             info: None,
             settings_open: false,
+            toc_overlay_open: false,
             search: String::new(),
             focus_search: false,
             fullscreen: false,
@@ -1621,6 +2192,8 @@ mod tests {
             picker: None,
             body_geometry: None,
             progress_rect: None,
+            #[cfg(test)]
+            empty_open_rect: None,
         };
         (ctx, reader)
     }
@@ -1808,12 +2381,8 @@ mod tests {
             (r.scroll - old_scroll - 740.).abs() < 0.1,
             "上方图片修正高度必须补偿偏移"
         );
-        let expected = 40.
-            + r.layout
-                .rows
-                .iter()
-                .map(|row| row.height + r.settings.paragraph_spacing)
-                .sum::<f32>();
+        let last = r.layout.rows.last().unwrap();
+        let expected = last.y + last.height + r.settings.paragraph_spacing + 24.;
         assert!((r.layout.height - expected).abs() < 0.1);
         let (_, content, viewport) = r.body_geometry.unwrap();
         assert!(
@@ -1821,7 +2390,7 @@ mod tests {
             "ScrollArea 必须包含未绘制段落的高度"
         );
         assert!(content.y > viewport.height() * 50.);
-        for rows in r.layout.rows.windows(2) {
+        for rows in r.layout.rows[1..].windows(2) {
             assert!(
                 (rows[1].y - rows[0].y - rows[0].height - r.settings.paragraph_spacing).abs()
                     < 0.01
@@ -1840,10 +2409,24 @@ mod tests {
                 bar.top() + (offset + viewport.height() * 0.5) / content.y * bar.height()
             };
             let from = Pos2::new(bar.center().x, y(r.scroll));
-            let to = Pos2::new(bar.center().x, y(max * fraction));
+            // Endpoints drag all the way to the track edge; subpixel thumb
+            // rounding must not leave a tiny offset in a very long chapter.
+            let target_y = if fraction == 0. {
+                bar.top()
+            } else if fraction == 1. {
+                bar.bottom()
+            } else {
+                y(max * fraction)
+            };
+            let to = Pos2::new(bar.center().x, target_y);
             drag(&ctx, &mut r, &mut time, from, to);
             assert!(
-                (r.scroll - max * fraction).abs() < 1.,
+                (r.scroll - max * fraction).abs()
+                    < if fraction == 0. || fraction == 1. {
+                        1.
+                    } else {
+                        content.y / bar.height()
+                    },
                 "拖动 {fraction} 后偏移错误：{}",
                 r.scroll
             );
@@ -1913,10 +2496,11 @@ mod tests {
             assert!(r.jump.is_none() && r.scroll_request.is_none());
             let scroll = r.scroll;
             full_frame(&ctx, &mut r, &mut time, wheel(-120.));
-            assert!(r.scroll > scroll + 50.);
+            assert!(r.scroll > scroll, "重排后滚轮必须立即生效");
             for _ in 0..8 {
                 full_frame(&ctx, &mut r, &mut time, vec![]);
             }
+            assert!(r.scroll > scroll + 50., "平滑滚动稳定后必须保留滚动量");
         }
     }
     #[test]
@@ -1928,9 +2512,7 @@ mod tests {
         for target in [25., 75., 100., 0.] {
             let rect = r.progress_rect.unwrap();
             let radius = rect.height() / 2.5;
-            let x = |p: f32| {
-                rect.left() + radius + p / 100. * (ctx.style().spacing.slider_width - 2. * radius)
-            };
+            let x = |p: f32| rect.left() + radius + p / 100. * (rect.width() - 2. * radius);
             let from = Pos2::new(x(percent(&r)), rect.center().y);
             let to = Pos2::new(x(target), rect.center().y);
             drag(&ctx, &mut r, &mut time, from, to);

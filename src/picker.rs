@@ -1,3 +1,4 @@
+use crate::theme::Icon;
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -70,6 +71,9 @@ impl Picker {
             .id(egui::Id::new("file-picker"))
             .open(&mut open)
             .default_size([620., 440.])
+            .max_width((ctx.screen_rect().width() - 48.).max(240.))
+            .max_height((ctx.screen_rect().height() - 64.).max(180.))
+            .vscroll(true)
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -92,7 +96,7 @@ impl Picker {
                         }
                     }
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("磁盘：");
                     for c in &self.drives {
                         let drive = PathBuf::from(format!("{c}:\\"));
@@ -107,10 +111,10 @@ impl Picker {
                     .max_height(290.)
                     .show(ui, |ui| {
                         for (name, dir) in &self.entries {
-                            let label = if *dir {
-                                format!("▸ {name}\\")
+                            let label: egui::WidgetText = if *dir {
+                                Icon::FolderOpen.label(name).into()
                             } else {
-                                name.clone()
+                                name.clone().into()
                             };
                             let r = ui.selectable_label(!dir && self.name == *name, label);
                             if r.clicked() {

@@ -42,19 +42,19 @@ pub fn toggle_opacity(current: u8, last_low: &mut u8) -> u8 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            font: "微软雅黑".into(),
+            font: "宋体".into(),
             size: 22.,
             weight: 1,
-            line_spacing: 1.6,
-            paragraph_spacing: 14.,
+            line_spacing: 1.8,
+            paragraph_spacing: 22.,
             margin: 35.,
-            max_width: 760.,
-            theme: 1,
-            background: [248, 242, 226],
-            foreground: [47, 43, 37],
-            toc: true,
+            max_width: 680.,
+            theme: 0,
+            background: [250, 250, 248],
+            foreground: [40, 42, 43],
+            toc: false,
             immersive: false,
-            toc_width: 235.,
+            toc_width: 250.,
             collapsed_toc: Vec::new(),
             window_size: [1100., 800.],
             window_pos: None,
@@ -69,10 +69,21 @@ impl Settings {
     pub fn set_theme(&mut self, theme: usize) {
         self.theme = theme;
         (self.background, self.foreground) = match theme {
-            0 => ([255, 255, 255], [35, 35, 35]),
+            0 => ([250, 250, 248], [40, 42, 43]),
             2 => ([28, 30, 34], [213, 216, 221]),
             _ => ([248, 242, 226], [47, 43, 37]),
         };
+    }
+    pub fn restore_typography(&mut self) {
+        let d = Self::default();
+        self.font = d.font;
+        self.size = d.size;
+        self.weight = d.weight;
+        self.line_spacing = d.line_spacing;
+        self.paragraph_spacing = d.paragraph_spacing;
+        self.margin = d.margin;
+        self.max_width = d.max_width;
+        self.set_theme(d.theme);
     }
     pub fn sanitize(&mut self) {
         fn bounded(v: &mut f32, low: f32, high: f32, fallback: f32) {
@@ -83,10 +94,10 @@ impl Settings {
             };
         }
         bounded(&mut self.size, 12., 48., 22.);
-        bounded(&mut self.line_spacing, 1., 3., 1.6);
-        bounded(&mut self.paragraph_spacing, 0., 60., 14.);
+        bounded(&mut self.line_spacing, 1., 3., 1.8);
+        bounded(&mut self.paragraph_spacing, 0., 60., 22.);
         bounded(&mut self.margin, 0., 160., 35.);
-        bounded(&mut self.max_width, 300., 1600., 760.);
+        bounded(&mut self.max_width, 300., 1600., 680.);
         bounded(&mut self.window_size[0], 500., 8000., 1100.);
         bounded(&mut self.window_size[1], 350., 8000., 800.);
         self.weight = self.weight.min(2);
@@ -94,13 +105,39 @@ impl Settings {
         if self.boss_shortcut.validate().is_err() {
             self.boss_shortcut = Default::default();
         }
-        bounded(&mut self.toc_width, 150., 600., 235.);
+        bounded(&mut self.toc_width, 150., 600., 250.);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_preferences_survive_new_minimal_defaults() {
+        let saved = r#"{"font":"微软雅黑","size":24,"line_spacing":1.6,"paragraph_spacing":14,"max_width":760,"theme":1,"background":[248,242,226],"foreground":[47,43,37],"toc":true,"toc_width":310,"window_opacity":65,"auto_hide_on_mouse_leave":true}"#;
+        let mut settings: Settings = serde_json::from_str(saved).unwrap();
+        settings.sanitize();
+        assert_eq!(settings.font, "微软雅黑");
+        assert_eq!(settings.theme, 1);
+        assert_eq!(settings.background, [248, 242, 226]);
+        assert!(settings.toc);
+        assert_eq!(settings.toc_width, 310.);
+        assert_eq!(settings.max_width, 760.);
+        let old = settings.clone();
+        settings.restore_typography();
+        assert_eq!(settings.font, "宋体");
+        assert_eq!(settings.theme, 0);
+        assert_eq!(settings.max_width, 680.);
+        assert_eq!(settings.toc, old.toc);
+        assert_eq!(settings.toc_width, old.toc_width);
+        assert_eq!(settings.window_opacity, old.window_opacity);
+        assert_eq!(
+            settings.auto_hide_on_mouse_leave,
+            old.auto_hide_on_mouse_leave
+        );
+        assert_eq!(settings.boss_shortcut, old.boss_shortcut);
+    }
 
     #[test]
     fn opacity_is_bounded() {

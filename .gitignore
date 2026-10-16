@@ -9,3 +9,7 @@
 *.tmp
 *.exe
 *.zip
+
+/work/
+
+/dist/
