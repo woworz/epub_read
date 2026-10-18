@@ -15,6 +15,38 @@ use std::{
     time::{Duration, Instant},
 };
 
+const IMAGE_CACHE_LIMIT: usize = 64;
+const PANEL_SIDE: i8 = 24;
+const TOOLBAR_HEIGHT: f32 = 34.;
+const TOOLBAR_LEFT_W: f32 = 270.;
+const TOOLBAR_LEFT_W_COMPACT: f32 = 220.;
+const TOOLBAR_RIGHT_W: f32 = 260.;
+const TOOLBAR_RIGHT_W_COMPACT: f32 = 164.;
+const TOOLBAR_TITLE_MIN_W: f32 = 160.;
+const COMPACT_BELOW: f32 = 760.;
+const FOOTER_HEIGHT: f32 = 32.;
+const FOOTER_NAV_W: f32 = 190.;
+const FOOTER_LABEL_PREFIX_MIN_W: f32 = 650.;
+
+fn toolbar_geometry(rect: Rect) -> (bool, Rect, Rect, Option<Rect>) {
+    let compact = rect.width() < COMPACT_BELOW;
+    let (left_w, right_w) = if compact {
+        (TOOLBAR_LEFT_W_COMPACT, TOOLBAR_RIGHT_W_COMPACT)
+    } else {
+        (TOOLBAR_LEFT_W, TOOLBAR_RIGHT_W)
+    };
+    let left = Rect::from_min_size(rect.min, egui::vec2(left_w, rect.height()));
+    let right = Rect::from_min_max(egui::pos2(rect.right() - right_w, rect.top()), rect.max);
+    let title_room = rect.width() - left_w - right_w;
+    let middle = (!compact && title_room >= TOOLBAR_TITLE_MIN_W).then(|| {
+        Rect::from_min_size(
+            egui::pos2(left.right() + 8., rect.top()),
+            egui::vec2(title_room - 16., rect.height()),
+        )
+    });
+    (compact, left, right, middle)
+}
+
 pub struct Reader {
     settings: Settings,
     data_dir: Option<PathBuf>,
@@ -488,7 +520,7 @@ impl Reader {
     }
     fn show_toc(&mut self, ctx: &egui::Context) {
         self.settings.immersive = false;
-        if ctx.screen_rect().width() < 760. {
+        if ctx.screen_rect().width() < COMPACT_BELOW {
             self.toc_overlay_open = true;
         } else {
             self.settings.toc = true;
@@ -496,7 +528,7 @@ impl Reader {
         self.dirty = true;
     }
     fn toggle_toc(&mut self, ctx: &egui::Context) {
-        if ctx.screen_rect().width() < 760. {
+        if ctx.screen_rect().width() < COMPACT_BELOW {
             self.toc_overlay_open = !self.toc_overlay_open;
             if self.toc_overlay_open {
                 self.settings.immersive = false;
@@ -513,15 +545,18 @@ impl Reader {
             return;
         }
         let palette = Palette::for_settings(&self.settings);
-        egui::TopBottomPanel::top("toolbar")
-            .frame(theme::panel_frame(palette, egui::Margin::symmetric(24, 14)))
+        let panel = egui::TopBottomPanel::top("toolbar")
+            .show_separator_line(false)
+            .frame(theme::panel_frame(
+                palette,
+                egui::Margin::symmetric(PANEL_SIDE, 14),
+            ))
             .show(ctx, |ui| {
                 let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), 34.),
+                    egui::vec2(ui.available_width(), TOOLBAR_HEIGHT),
                     egui::Sense::hover(),
                 );
-                let compact = rect.width() < 712.;
-                let left = Rect::from_min_size(rect.min, egui::vec2(270., rect.height()));
+                let (compact, left, right, middle) = toolbar_geometry(rect);
                 ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(left)
@@ -554,11 +589,6 @@ impl Reader {
                             self.choose_file();
                         }
                     },
-                );
-                let right_width = if compact { 164. } else { 260. };
-                let right = Rect::from_min_max(
-                    egui::pos2(rect.right() - right_width, rect.top()),
-                    rect.max,
                 );
                 ui.scope_builder(
                     egui::UiBuilder::new()
@@ -605,17 +635,13 @@ impl Reader {
                         }
                     },
                 );
-                if rect.width() > 940. {
+                if let Some(middle) = middle {
                     if let Some(book) = &self.book {
                         let title = if book.author.is_empty() {
                             book.title.clone()
                         } else {
                             format!("{} · {}", book.title, book.author)
                         };
-                        let middle = Rect::from_center_size(
-                            rect.center(),
-                            egui::vec2(rect.width() - 580., rect.height()),
-                        );
                         ui.scope_builder(
                             egui::UiBuilder::new().max_rect(middle).layout(
                                 egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
@@ -630,17 +656,23 @@ impl Reader {
                         );
                     }
                 }
-                ui.painter().hline(
-                    rect.left() - 24. ..=rect.right() + 24.,
-                    rect.bottom() + 13.,
-                    egui::Stroke::new(1.0_f32, palette.line),
-                );
+                rect
             });
+        // The content Ui excludes the frame margin; the panel response includes it.
+        ctx.layer_painter(panel.response.layer_id).hline(
+            panel.inner.left() - f32::from(PANEL_SIDE)
+                ..=panel.inner.right() + f32::from(PANEL_SIDE),
+            panel.response.rect.bottom() - 0.5,
+            egui::Stroke::new(1.0_f32, palette.line),
+        );
     }
     fn footer(&mut self, ctx: &egui::Context) {
         let palette = Palette::for_settings(&self.settings);
         egui::TopBottomPanel::bottom("progress")
-            .frame(theme::panel_frame(palette, egui::Margin::symmetric(24, 8)))
+            .frame(theme::panel_frame(
+                palette,
+                egui::Margin::symmetric(PANEL_SIDE, 8),
+            ))
             .show(ctx, |ui| {
                 let mut target: Option<(usize, Option<f32>)> = None;
                 if let Some(book) = &self.book {
@@ -693,10 +725,13 @@ impl Reader {
                         }
                     });
                     let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), 32.),
+                        egui::vec2(ui.available_width(), FOOTER_HEIGHT),
                         egui::Sense::hover(),
                     );
-                    let middle = Rect::from_center_size(rect.center(), egui::vec2(190., 32.));
+                    let middle = Rect::from_center_size(
+                        rect.center(),
+                        egui::vec2(FOOTER_NAV_W, rect.height()),
+                    );
                     ui.scope_builder(
                         egui::UiBuilder::new()
                             .max_rect(middle)
@@ -743,7 +778,7 @@ impl Reader {
                                     self.dirty = true;
                                 }
                             } else {
-                                let label = if rect.width() < 650. {
+                                let label = if rect.width() < FOOTER_LABEL_PREFIX_MIN_W {
                                     title.clone()
                                 } else {
                                     format!("当前章节  {title}")
@@ -848,7 +883,7 @@ impl Reader {
         if self.settings.immersive {
             return;
         }
-        let narrow = ctx.screen_rect().width() < 760.;
+        let narrow = ctx.screen_rect().width() < COMPACT_BELOW;
         if !narrow {
             self.toc_overlay_open = false;
         }
@@ -1169,44 +1204,93 @@ impl Reader {
         self.picker = Some(crate::picker::Picker::new(directory));
     }
     fn load_visible_images(&mut self, ctx: &egui::Context, visible: Rect) {
-        let Some(book) = &mut self.book else {
+        if self.book.is_none() {
             return;
-        };
-        let mut loaded = false;
-        for (p, row) in self.paragraphs.iter().zip(&self.layout.rows) {
-            if row.y > visible.max.y + 100. || row.y + row.height < visible.min.y - 100. {
-                continue;
+        }
+        let pending: Vec<_> = self
+            .paragraphs
+            .iter()
+            .zip(&self.layout.rows)
+            .enumerate()
+            .filter_map(|(index, (p, row))| {
+                if row.y > visible.max.y + 100. || row.y + row.height < visible.min.y - 100. {
+                    return None;
+                }
+                match &p.kind {
+                    Kind::Image(path) => Some((index, path.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
+        let old_scroll = self.scroll;
+        let mut changed = false;
+        for (index, path) in pending {
+            if !self.images.contains_key(&path) {
+                let result = (|| {
+                    let book = self.book.as_mut().ok_or_else(|| "未打开书籍".to_owned())?;
+                    let bytes = book.image(&path)?;
+                    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+                        .with_guessed_format()
+                        .map_err(|e| e.to_string())?;
+                    let mut limits = image::Limits::default();
+                    limits.max_image_width = Some(12000);
+                    limits.max_image_height = Some(12000);
+                    limits.max_alloc = Some(128 * 1024 * 1024);
+                    reader.limits(limits);
+                    let img = reader
+                        .decode()
+                        .map_err(|e| format!("图片无法解码：{e}"))?
+                        .to_rgba8();
+                    let size = [img.width() as usize, img.height() as usize];
+                    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                    Ok(ctx.load_texture(&path, color, egui::TextureOptions::LINEAR))
+                })();
+                self.images.insert(path.clone(), result);
             }
-            if let Kind::Image(path) = &p.kind {
-                if !self.images.contains_key(path) {
-                    let result = (|| {
-                        let bytes = book.image(path)?;
-                        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-                            .with_guessed_format()
-                            .map_err(|e| e.to_string())?;
-                        let mut limits = image::Limits::default();
-                        limits.max_image_width = Some(12000);
-                        limits.max_image_height = Some(12000);
-                        limits.max_alloc = Some(128 * 1024 * 1024);
-                        reader.limits(limits);
-                        let img = reader
-                            .decode()
-                            .map_err(|e| format!("图片无法解码：{e}"))?
-                            .to_rgba8();
-                        let size = [img.width() as usize, img.height() as usize];
-                        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-                        Ok(ctx.load_texture(path, color, egui::TextureOptions::LINEAR))
-                    })();
-                    self.images.insert(path.clone(), result);
-                    loaded = true;
+            let above = self.layout.rows[index].y <= self.scroll;
+            if let Some(delta) = self.layout.refresh_image_row(index, &path, &self.images) {
+                changed = true;
+                if above {
+                    self.scroll += delta;
+                    self.scroll_request = Some(self.scroll);
                 }
             }
         }
-        if loaded {
-            self.jump = Some(self.data.location.clone());
-            self.layout.clear();
+        self.prune_image_cache(visible.translate(egui::vec2(0., self.scroll - old_scroll)));
+        if changed {
             ctx.request_repaint();
         }
+    }
+    fn prune_image_cache(&mut self, visible: Rect) {
+        if self.images.len() <= IMAGE_CACHE_LIMIT {
+            return;
+        }
+        let margin = visible.height() * 2.;
+        let mut nearby = std::collections::HashMap::<&str, f32>::new();
+        for (p, row) in self.paragraphs.iter().zip(&self.layout.rows) {
+            if let Kind::Image(path) = &p.kind {
+                if row.y <= visible.max.y + margin && row.y + row.height >= visible.min.y - margin {
+                    let distance = (row.y - visible.max.y)
+                        .max(visible.min.y - row.y - row.height)
+                        .max(0.);
+                    nearby
+                        .entry(path)
+                        .and_modify(|old| *old = old.min(distance))
+                        .or_insert(distance);
+                }
+            }
+        }
+        // Normally the five-screen window fits the limit. Prefer the nearest
+        // textures even in chapters containing many tiny images.
+        let mut keep: Vec<_> = nearby
+            .into_iter()
+            .filter(|(path, _)| self.images.contains_key(*path))
+            .collect();
+        keep.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(b.0)));
+        keep.truncate(IMAGE_CACHE_LIMIT);
+        let keep: std::collections::HashSet<_> = keep.into_iter().map(|(path, _)| path).collect();
+        self.images.retain(|path, _| keep.contains(path.as_str()));
+        // Row dimensions survive eviction so revisiting an image cannot collapse it.
     }
     fn reader(&mut self, ctx: &egui::Context) {
         let bg = Color32::from_rgb(
@@ -1309,7 +1393,7 @@ impl Reader {
                 } else {
                     0.
                 };
-                let mut visible = Rect::NOTHING;
+                let mut image_scroll_delta = 0.;
                 let mut area = egui::ScrollArea::vertical()
                     .id_salt("body-scroll")
                     .auto_shrink([false, false]);
@@ -1318,9 +1402,17 @@ impl Reader {
                     area = area.vertical_scroll_offset(offset.max(0.));
                 }
                 let output = area.show_viewport(ui, |ui, viewport| {
-                    visible = viewport;
+                    // Decode before painting: a reload with unchanged height must
+                    // display this frame without requesting another repaint.
+                    self.scroll = viewport.min.y;
+                    self.load_visible_images(ctx, viewport);
+                    image_scroll_delta = self.scroll - viewport.min.y;
                     let total_width = ui.available_width();
                     let (_, rect) = ui.allocate_space(Vec2::new(total_width, self.layout.height));
+                    // Apply the same anchor correction to this frame's drawing;
+                    // ScrollArea consumes scroll_request on the following frame.
+                    let rect = rect.translate(egui::vec2(0., -image_scroll_delta));
+                    let viewport = viewport.translate(egui::vec2(0., image_scroll_delta));
                     let left = rect.left() + (total_width - width) * 0.5;
                     if let Some(g) = &self.layout.book_label {
                         ui.painter().galley(
@@ -1341,16 +1433,19 @@ impl Reader {
                         self.settings.foreground[1],
                         self.settings.foreground[2],
                     );
-                    ui.painter().line_segment(
-                        [
-                            egui::pos2(left, rect.top() + self.layout.divider_y),
-                            egui::pos2(left + 32., rect.top() + self.layout.divider_y),
-                        ],
-                        egui::Stroke::new(1.0_f32, color.gamma_multiply(0.5)),
-                    );
+                    if let Some(dy) = self.layout.divider_y {
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(left, rect.top() + dy),
+                                egui::pos2(left + 32., rect.top() + dy),
+                            ],
+                            egui::Stroke::new(1.0_f32, color.gamma_multiply(0.5)),
+                        );
+                    }
                     let first = self.layout.paragraph_at(viewport.min.y - 60.);
                     let last = (self.layout.paragraph_at(viewport.max.y + 60.) + 1)
-                        .min(self.paragraphs.len());
+                        .min(self.paragraphs.len())
+                        .min(self.layout.rows.len());
                     // 整章只有高度占位；仅为可见段落创建交互区域并提交绘制命令。
                     for i in first..last {
                         let row = &self.layout.rows[i];
@@ -1407,7 +1502,7 @@ impl Reader {
                         }
                     }
                 });
-                self.scroll = output.state.offset.y;
+                self.scroll = output.state.offset.y + image_scroll_delta;
                 #[cfg(test)]
                 {
                     self.body_geometry = Some((output.id, output.content_size, output.inner_rect));
@@ -1425,7 +1520,6 @@ impl Reader {
                         ctx.request_repaint();
                     }
                 }
-                self.load_visible_images(ctx, visible);
                 let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.);
                 // 短章没有滚动范围时，滚轮仍可继续阅读下一章。
                 if wheel < 0. && before_scroll >= max_offset - 1. {
@@ -1755,6 +1849,207 @@ impl eframe::App for Reader {
 mod tests {
     use super::*;
 
+    #[test]
+    fn toolbar_title_geometry_never_overlaps_buttons_or_has_negative_width() {
+        for width in 0..=1200 {
+            let rect = Rect::from_min_size(
+                Pos2::new(24., 14.),
+                egui::vec2(width as f32, TOOLBAR_HEIGHT),
+            );
+            let (compact, left, right, middle) = toolbar_geometry(rect);
+            assert_eq!(compact, rect.width() < COMPACT_BELOW);
+            if let Some(middle) = middle {
+                assert!(!compact);
+                assert!(middle.width() >= TOOLBAR_TITLE_MIN_W - 16.);
+                assert!(middle.left() >= left.right() + 8.);
+                assert!(middle.right() <= right.left() - 8.);
+            }
+            if width >= 500 - 2 * i32::from(PANEL_SIDE) {
+                assert!(left.right() <= right.left());
+            }
+        }
+    }
+
+    #[test]
+    fn toolbar_divider_tracks_the_outer_panel_bottom() {
+        let (ctx, mut r) = reader();
+        for (width, height) in [(500., 350.), (760., 600.), (1100., 800.)] {
+            let mut bottom = 0.;
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(width, height))),
+                    ..Default::default()
+                },
+                |ctx| {
+                    theme::apply(ctx, &r.settings);
+                    r.toolbar(ctx);
+                    bottom = ctx.available_rect().top();
+                },
+            );
+            let dividers: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::LineSegment { points, stroke } = &shape.shape {
+                        if stroke.width > 0. && (points[1].x - points[0].x - width).abs() < 0.01 {
+                            return Some(points);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            assert_eq!(dividers.len(), 1);
+            assert_eq!(dividers[0][0].y, bottom - 0.5);
+            assert_eq!(dividers[0][1].y, bottom - 0.5);
+        }
+    }
+
+    #[test]
+    fn visible_image_refresh_compensates_only_rows_starting_above_viewport() {
+        for relative_top in [-20., 0., 20., 200.] {
+            let (ctx, mut r, _time) = long_reader();
+            r.paragraphs[5].kind = Kind::Image("test-image".into());
+            r.images
+                .insert("test-image".into(), Err("placeholder".into()));
+            r.layout.clear();
+            sized_frame(&ctx, &mut r, 1100., 800., 0.1, vec![]);
+            let row_y = r.layout.rows[5].y;
+            r.scroll = row_y - relative_top;
+            r.scroll_request = None;
+            r.jump = None;
+            let old_scroll = r.scroll;
+            let height = r.layout.height;
+            let galley = r.layout.rows[6].galley.clone().unwrap();
+            let texture = ctx.load_texture(
+                "test-image",
+                egui::ColorImage::new([8, 800], Color32::WHITE),
+                Default::default(),
+            );
+            r.images.insert("test-image".into(), Ok(texture));
+            let visible = Rect::from_min_size(egui::pos2(0., r.scroll), egui::vec2(600., 300.));
+            r.load_visible_images(&ctx, visible);
+            assert!(r.jump.is_none());
+            assert_eq!(r.layout.height, height + 740.);
+            assert!(std::sync::Arc::ptr_eq(
+                &galley,
+                r.layout.rows[6].galley.as_ref().unwrap()
+            ));
+            if relative_top <= 0. {
+                assert_eq!(r.scroll, old_scroll + 740.);
+                assert_eq!(r.scroll_request, Some(r.scroll));
+            } else {
+                assert_eq!(r.scroll, old_scroll);
+                assert_eq!(r.scroll_request, None);
+            }
+            r.scroll_request = None;
+            r.load_visible_images(&ctx, visible);
+            assert_eq!(r.scroll_request, None);
+        }
+    }
+
+    #[test]
+    fn visible_image_decodes_and_reloads_without_losing_retained_dimensions() {
+        let (ctx, mut r) = reader();
+        r.paragraphs = vec![Paragraph {
+            kind: Kind::Image("OPS/image.png".into()),
+            runs: vec![],
+            anchor: String::new(),
+        }];
+        r.images
+            .insert("OPS/image.png".into(), Err("placeholder".into()));
+        sized_frame(&ctx, &mut r, 1100., 800., 0., vec![]);
+        let height = r.layout.height;
+        for _ in 0..2 {
+            r.images.remove("OPS/image.png");
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1100., 800.))),
+                    ..Default::default()
+                },
+                |ctx| r.reader(ctx),
+            );
+            assert!(r.images["OPS/image.png"].is_ok());
+            let texture_id = r.images["OPS/image.png"].as_ref().unwrap().id();
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == texture_id)));
+            assert_eq!(r.layout.rows[0].image_size, Some([120., 60.]));
+            assert_eq!(r.layout.height, height);
+            assert!(r.jump.is_none() && r.scroll_request.is_none());
+        }
+    }
+
+    #[test]
+    fn image_cache_evicts_distant_textures_without_changing_row_geometry() {
+        let (ctx, mut r) = reader();
+        let texture = ctx.load_texture(
+            "cache-test",
+            egui::ColorImage::new([1, 100], Color32::WHITE),
+            Default::default(),
+        );
+        r.paragraphs.clear();
+        r.layout.clear();
+        for index in 0..100 {
+            let path = format!("image-{index}");
+            r.paragraphs.push(Paragraph {
+                kind: Kind::Image(path.clone()),
+                runs: vec![],
+                anchor: String::new(),
+            });
+            r.layout.rows.push(crate::render::Row {
+                y: index as f32 * 100.,
+                height: 100.,
+                galley: None,
+                image_size: Some([1., 100.]),
+            });
+            r.images.insert(path, Ok(texture.clone()));
+        }
+        r.layout.height = 10000.;
+        let before: Vec<_> = r
+            .layout
+            .rows
+            .iter()
+            .map(|row| (row.y, row.height, row.image_size))
+            .collect();
+        r.prune_image_cache(Rect::from_min_max(
+            egui::pos2(0., 3000.),
+            egui::pos2(600., 3500.),
+        ));
+        assert!(r.images.len() <= IMAGE_CACHE_LIMIT);
+        for index in 0..100 {
+            assert_eq!(
+                r.images.contains_key(&format!("image-{index}")),
+                (19..=45).contains(&index)
+            );
+        }
+        assert_eq!(r.layout.height, 10000.);
+        assert_eq!(
+            before,
+            r.layout
+                .rows
+                .iter()
+                .map(|row| (row.y, row.height, row.image_size))
+                .collect::<Vec<_>>()
+        );
+        // A dense five-screen window must also respect the hard cap.
+        for (index, row) in r.layout.rows.iter_mut().enumerate() {
+            row.y = index as f32;
+            r.images
+                .insert(format!("image-{index}"), Ok(texture.clone()));
+        }
+        r.prune_image_cache(Rect::from_min_size(Pos2::ZERO, egui::vec2(600., 100.)));
+        assert_eq!(r.images.len(), IMAGE_CACHE_LIMIT);
+    }
+
+    #[test]
+    fn empty_chapter_and_cleared_layout_are_safe_for_footer_and_reader() {
+        let (ctx, mut r) = reader();
+        r.paragraphs.clear();
+        for (width, height) in [(500., 350.), (760., 600.), (1100., 800.)] {
+            r.layout.clear();
+            sized_frame(&ctx, &mut r, width, height, 0., vec![]);
+            assert!(r.layout.rows.is_empty() && r.layout.divider_y.is_none());
+        }
+    }
+
     struct SaveDir(PathBuf);
     impl SaveDir {
         fn new() -> Self {
@@ -1879,7 +2174,7 @@ mod tests {
         sized_frame(&ctx, &mut r, 1100., 800., 0.1, vec![]);
         assert!(r.layout.fallback_heading.is_some());
         assert_eq!(r.layout.rows.len(), r.paragraphs.len());
-        assert!(r.layout.rows[0].y > r.layout.divider_y);
+        assert!(r.layout.rows[0].y > r.layout.divider_y.unwrap());
         assert_eq!(r.scroll, 0.);
     }
 
@@ -2361,20 +2656,26 @@ mod tests {
     #[test]
     fn total_height_includes_all_rows_and_image_reflow_preserves_anchor() {
         let (ctx, mut r, mut time) = long_reader();
-        r.paragraphs[5].kind = Kind::Image("test-image".into());
+        r.paragraphs[119].kind = Kind::Image("test-image".into());
         r.images.insert("test-image".into(), Err("占位".into()));
         r.layout.clear();
         full_frame(&ctx, &mut r, &mut time, vec![]);
         let location = r.data.location.clone();
         let old_scroll = r.scroll;
+        let galley = r.layout.rows[120].galley.clone().unwrap();
         let texture = ctx.load_texture(
             "test-image",
             egui::ColorImage::new([8, 800], Color32::WHITE),
             Default::default(),
         );
         r.images.insert("test-image".into(), Ok(texture));
-        r.layout.clear();
         full_frame(&ctx, &mut r, &mut time, vec![]);
+        assert!(std::sync::Arc::ptr_eq(
+            &galley,
+            r.layout.rows[120].galley.as_ref().unwrap()
+        ));
+        full_frame(&ctx, &mut r, &mut time, vec![]);
+        assert!(r.jump.is_none() && r.scroll_request.is_none());
         assert_eq!(r.data.location.paragraph, location.paragraph);
         assert!((r.data.location.offset - location.offset).abs() < 0.001);
         assert!(
